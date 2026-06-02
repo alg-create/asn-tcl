@@ -1,0 +1,100 @@
+package require tcltest
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+# Define a schema that covers various types
+set schema {
+    FuzzModule DEFINITIONS ::= BEGIN
+        MyTags ::= SET {
+            t1 INTEGER,
+            t2 INTEGER
+        }
+        
+        MyChoice ::= CHOICE {
+            opt1 INTEGER,
+            opt2 OCTET STRING
+        }
+
+        FuzzSeq ::= SEQUENCE {
+            id INTEGER,
+            active BOOLEAN,
+            name OCTET STRING OPTIONAL,
+            tags MyTags OPTIONAL,
+            choice MyChoice
+        }
+    END
+}
+
+set ast [asn1::parse_str $schema]
+
+# Create a valid value
+set val [dict create \
+    id 12345 \
+    active 1 \
+    name "FuzzTest" \
+    tags [dict create t1 10 t2 20] \
+    choice [dict create opt1 42] \
+]
+
+# Get the valid encoded bytes
+set valid_bytes [asn1::ber_encode $ast FuzzModule FuzzSeq $val]
+set valid_len [string length $valid_bytes]
+
+tcltest::test ber-fuzz-1.1 {Fuzz BER decoder with random mutations} -body {
+    set iters 1000
+    set success_count 0
+    set error_count 0
+    
+    # Initialize random seed for reproducibility
+    expr {srand(42)}
+    
+    for {set i 0} {$i < $iters} {incr i} {
+        set mutated_bytes $valid_bytes
+        set mut_len [string length $mutated_bytes]
+        
+        # Determine mutation type (0: bit flip, 1: truncate, 2: append, 3: overwrite byte)
+        set mut_type [expr {int(rand() * 4)}]
+        
+        if {$mut_type == 0 && $mut_len > 0} {
+            # Bit flip
+            set byte_idx [expr {int(rand() * $mut_len)}]
+            binary scan [string index $mutated_bytes $byte_idx] c b
+            set b [expr {$b & 0xFF}]
+            set bit_idx [expr {int(rand() * 8)}]
+            set b [expr {$b ^ (1 << $bit_idx)}]
+            set mutated_bytes [string replace $mutated_bytes $byte_idx $byte_idx [binary format c $b]]
+            
+        } elseif {$mut_type == 1 && $mut_len > 0} {
+            # Truncate
+            set trunc_len [expr {int(rand() * $mut_len)}]
+            set mutated_bytes [string range $mutated_bytes 0 $trunc_len-1]
+            
+        } elseif {$mut_type == 2} {
+            # Append random byte
+            set rand_byte [expr {int(rand() * 256)}]
+            append mutated_bytes [binary format c $rand_byte]
+            
+        } elseif {$mut_type == 3 && $mut_len > 0} {
+            # Overwrite with interesting values (e.g. 0x80 indefinite length, 0xFF, 0x00)
+            set byte_idx [expr {int(rand() * $mut_len)}]
+            set interesting {0 128 255 127}
+            set b [lindex $interesting [expr {int(rand() * [llength $interesting])}]]
+            set mutated_bytes [string replace $mutated_bytes $byte_idx $byte_idx [binary format c $b]]
+        }
+        
+        # Attempt to decode. We don't care about the result or if it errors out.
+        # We only care that it doesn't crash the interpreter or enter an infinite loop.
+        if {[catch {asn1::ber_decode $ast FuzzModule FuzzSeq $mutated_bytes} err]} {
+            incr error_count
+        } else {
+            incr success_count
+        }
+    }
+    
+    # If we made it here without hanging, the fuzz test passes.
+    return 1
+} -result 1
+
+tcltest::cleanupTests
