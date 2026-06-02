@@ -1309,6 +1309,10 @@ proc asn1::ber_decode_tag {bytes idxVar classVar consVar numVar} {
     upvar 1 $classVar class
     upvar 1 $consVar cons
     upvar 1 $numVar num
+
+    if {$idx >= [string length $bytes]} {
+        error "Truncated BER tag"
+    }
     
     binary scan [string index $bytes $idx] c tagByte
     set tagByte [expr {$tagByte & 0xFF}]
@@ -1321,6 +1325,9 @@ proc asn1::ber_decode_tag {bytes idxVar classVar consVar numVar} {
     if {$num == 31} {
         set num 0
         while {1} {
+            if {$idx >= [string length $bytes]} {
+                error "Truncated BER high-tag-number encoding"
+            }
             binary scan [string index $bytes $idx] c b
             set b [expr {$b & 0xFF}]
             incr idx
@@ -1965,7 +1972,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         "SEQUENCE" - "SET" {
             set tagNum [expr {$baseType eq "SEQUENCE" ? 16 : 17}]
             set valBytes ""
-            set comps [dict get $typeDef components]
+            set comps [asn1::ber_all_components $typeDef]
             dict for {fieldName fieldDef} $comps {
                 if {[dict exists $value $fieldName]} {
                     set fieldValue [dict get $value $fieldName]
@@ -1992,7 +1999,10 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             set keys [dict keys $value]
             if {[llength $keys] != 1} { error "CHOICE value must have exactly one key" }
             set chosenField [lindex $keys 0]
-            set fieldDef [dict get [dict get $typeDef components] $chosenField]
+            if {$chosenField eq "_extension" && [asn1::ber_type_is_extensible $typeDef]} {
+                return [dict get $value $chosenField]
+            }
+            set fieldDef [dict get [asn1::ber_all_components $typeDef] $chosenField]
             return [asn1::ber_encode_type $ast $moduleName $fieldDef [dict get $value $chosenField]]
         }
     }
@@ -2006,6 +2016,9 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
 
 proc asn1::ber_decode_length {bytes idxVar} {
     upvar 1 $idxVar idx
+    if {$idx >= [string length $bytes]} {
+        error "Truncated BER length"
+    }
     binary scan [string index $bytes $idx] c b
     set b [expr {$b & 0xFF}]
     incr idx
@@ -2016,6 +2029,12 @@ proc asn1::ber_decode_length {bytes idxVar} {
         return $b
     }
     set numBytes [expr {$b & 0x7F}]
+    if {$numBytes == 0} {
+        error "Invalid BER length byte"
+    }
+    if {$idx + $numBytes > [string length $bytes]} {
+        error "Truncated BER long-form length"
+    }
     set len 0
     for {set i 0} {$i < $numBytes} {incr i} {
         binary scan [string index $bytes $idx] c b
@@ -2142,7 +2161,7 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         "SET OF" { return [list [list 0 32 17]] }
         "CHOICE" {
             set tags {}
-            set comps [dict get $typeDef components]
+            set comps [asn1::ber_all_components $typeDef]
             dict for {fieldName fieldDef} $comps {
                 foreach t [asn1::get_expected_tag $ast $moduleName $fieldDef] { lappend tags $t }
             }
@@ -2182,6 +2201,23 @@ proc asn1::ber_component_default_value {ast moduleName fieldDef} {
     return [asn1::convert_value_literal $fieldBaseType [dict get $fieldDef default]]
 }
 
+proc asn1::ber_type_is_extensible {typeDef} {
+    return [expr {[dict exists $typeDef extensible] && [dict get $typeDef extensible]}]
+}
+
+proc asn1::ber_all_components {typeDef} {
+    set comps [dict create]
+    if {[dict exists $typeDef components]} {
+        set comps [dict get $typeDef components]
+    }
+    if {[dict exists $typeDef extensionAdditions]} {
+        dict for {fieldName fieldDef} [dict get $typeDef extensionAdditions] {
+            dict set comps $fieldName $fieldDef
+        }
+    }
+    return $comps
+}
+
 proc asn1::ber_set_find_component {ast moduleName comps seenFields parsedTag} {
     set anyCandidate ""
     dict for {fieldName fieldDef} $comps {
@@ -2218,10 +2254,14 @@ proc asn1::ber_set_tag_is_duplicate {ast moduleName comps seenFields parsedTag} 
 
 proc asn1::ber_skip_value {bytes idxVar} {
     upvar 1 $idxVar idx
+    set startIdx $idx
     asn1::ber_decode_tag $bytes idx _ _ _
     set len [asn1::ber_decode_length $bytes idx]
     if {$len == -1} {
         while {1} {
+            if {$idx + 1 >= [string length $bytes]} {
+                error "Truncated BER indefinite-length value"
+            }
             binary scan [string index $bytes $idx] c b1
             binary scan [string index $bytes [expr {$idx+1}]] c b2
             if {($b1 & 0xFF) == 0 && ($b2 & 0xFF) == 0} {
@@ -2231,19 +2271,31 @@ proc asn1::ber_skip_value {bytes idxVar} {
             asn1::ber_skip_value $bytes idx
         }
     } else {
+        if {$idx + $len > [string length $bytes]} {
+            error "Truncated BER value"
+        }
         incr idx $len
+    }
+    if {$idx <= $startIdx} {
+        error "BER skip did not advance"
     }
 }
 
 proc asn1::extract_ber_value {bytes idxVar len} {
     upvar 1 $idxVar idx
     if {$len >= 0} {
+        if {$idx + $len > [string length $bytes]} {
+            error "Truncated BER value"
+        }
         set valBytes [string range $bytes $idx [expr {$idx + $len - 1}]]
         incr idx $len
         return $valBytes
     } else {
         set startIdx $idx
         while {1} {
+            if {$idx + 1 >= [string length $bytes]} {
+                error "Truncated BER indefinite-length value"
+            }
             binary scan [string index $bytes $idx] c b1
             binary scan [string index $bytes [expr {$idx+1}]] c b2
             if {($b1 & 0xFF) == 0 && ($b2 & 0xFF) == 0} {
@@ -2254,6 +2306,16 @@ proc asn1::extract_ber_value {bytes idxVar len} {
             asn1::ber_skip_value $bytes idx
         }
     }
+}
+
+proc asn1::ber_skip_unknown_extension {bytes idxVar limit} {
+    upvar 1 $idxVar idx
+    set startIdx $idx
+    asn1::ber_skip_value $bytes idx
+    if {$idx > $limit} {
+        error "Unknown extension field exceeds enclosing BER value"
+    }
+    return [string range $bytes $startIdx [expr {$idx - 1}]]
 }
 
 proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
@@ -2319,13 +2381,18 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     set parsedTag [list $tagClass $tagCons $tagNum]
     
     if {$baseType eq "CHOICE"} {
-        set comps [dict get $typeDef components]
+        set comps [asn1::ber_all_components $typeDef]
         dict for {fieldName fieldDef} $comps {
             set expectedTags [asn1::get_expected_tag $ast $moduleName $fieldDef]
             if {[lsearch -exact $expectedTags $parsedTag] != -1} {
                 set idx $startIdx ;# Backtrack
                 return [dict create $fieldName [asn1::ber_decode_type $ast $moduleName $fieldDef $bytes idx]]
             }
+        }
+        if {[asn1::ber_type_is_extensible $typeDef]} {
+            set idx $startIdx
+            set tlv [asn1::ber_skip_unknown_extension $bytes idx [string length $bytes]]
+            return [dict create _extension $tlv]
         }
         error "No matching tag $parsedTag in CHOICE"
     }
@@ -2376,7 +2443,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         "SEQUENCE" {
             set result [dict create]
             set subIdx 0
-            set comps [dict get $typeDef components]
+            set comps [asn1::ber_all_components $typeDef]
             set valLen [string length $valBytes]
             dict for {fieldName fieldDef} $comps {
                 if {$subIdx >= $valLen} {
@@ -2403,9 +2470,9 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 set fieldVal [asn1::ber_decode_type $ast $moduleName $fieldDef $valBytes subIdx]
                 dict set result $fieldName $fieldVal
             }
-            if {[dict exists $typeDef extensible] && [dict get $typeDef extensible]} {
+            if {[asn1::ber_type_is_extensible $typeDef]} {
                 while {$subIdx < $valLen} {
-                    asn1::ber_skip_value $valBytes subIdx
+                    asn1::ber_skip_unknown_extension $valBytes subIdx $valLen
                 }
             }
             set decodedValue $result
@@ -2414,7 +2481,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             set decodedFields [dict create]
             set seenFields [dict create]
             set subIdx 0
-            set comps [dict get $typeDef components]
+            set comps [asn1::ber_all_components $typeDef]
             set valLen [string length $valBytes]
 
             while {$subIdx < $valLen} {
@@ -2424,8 +2491,8 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                     if {[asn1::ber_set_tag_is_duplicate $ast $moduleName $comps $seenFields $nextTag]} {
                         error "Duplicate SET field tag $nextTag"
                     }
-                    if {[dict exists $typeDef extensible] && [dict get $typeDef extensible]} {
-                        asn1::ber_skip_value $valBytes subIdx
+                    if {[asn1::ber_type_is_extensible $typeDef]} {
+                        asn1::ber_skip_unknown_extension $valBytes subIdx $valLen
                         continue
                     }
                     error "Unexpected SET field tag $nextTag"

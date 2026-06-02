@@ -56,6 +56,13 @@ set schema2 {
             number INTEGER,
             ...
         }
+
+        MsgV2 ::= CHOICE {
+            text   OCTET STRING,
+            number INTEGER,
+            ...,
+            flagged [2] BOOLEAN
+        }
     END
 }
 
@@ -68,6 +75,10 @@ tcltest::test ext-parse-2.1 {Extensible CHOICE marked in AST} -body {
 tcltest::test ext-parse-2.2 {CHOICE root components intact} -body {
     dict keys [dict get $ast2 ChoiceExt types Msg components]
 } -result {text number}
+
+tcltest::test ext-parse-2.3 {CHOICE extension additions stored} -body {
+    dict keys [dict get $ast2 ChoiceExt types MsgV2 extensionAdditions]
+} -result {flagged}
 
 # ======================================================================
 # 3. EXTENSIBILITY IMPLIED in module header
@@ -170,8 +181,47 @@ tcltest::test ext-ber-6.2 {Decode SEQUENCE with unknown extension fields skipped
     list [dict get $val name] [dict get $val age]
 } -result {Ab 1}
 
+tcltest::test ext-ber-6.3 {Extensible SEQUENCE roundtrips known extension additions} -body {
+    set value [dict create name "Ab" age 1 email "a@b"]
+    set encoded [asn1::ber_encode $ast1 ExtModule PersonV2 $value]
+    dict get [asn1::ber_decode $ast1 ExtModule PersonV2 $encoded] value
+} -result {name Ab age 1 email a@b}
+
+tcltest::test ext-ber-6.4 {Decode SEQUENCE skips multiple unknown extension TLVs} -body {
+    set root [binary decode hex "04024162020101"]
+    set unknown1 [asn1::ber_encode_utf8_string_tlv "hi"]
+    set unknown2 [asn1::ber_wrap_context 3 [asn1::ber_encode_integer_tlv 42] 1]
+    set bytes [asn1::ber_encode_sequence_tlv "${root}${unknown1}${unknown2}"]
+    set val [dict get [asn1::ber_decode $ast1 ExtModule PersonV1 $bytes] value]
+    list [dict get $val name] [dict get $val age]
+} -result {Ab 1}
+
+tcltest::test ext-ber-6.5 {Decode rejects truncated unknown SEQUENCE extension TLV} -body {
+    set bytes [binary decode hex "3009040241620201010405"]
+    asn1::ber_decode $ast1 ExtModule PersonV1 $bytes
+} -returnCodes error -match glob -result {*Truncated BER value*}
+
 # ======================================================================
-# 7. Extension marker in SET
+# 7. BER: unknown extension alternatives in CHOICE
+# ======================================================================
+tcltest::test ext-ber-7.1 {Extensible CHOICE preserves unknown extension TLV} -body {
+    set bytes [asn1::ber_wrap_context 7 [asn1::ber_encode_integer_tlv 42] 1]
+    set val [dict get [asn1::ber_decode $ast2 ChoiceExt Msg $bytes] value]
+    binary encode hex [dict get $val _extension]
+} -result "a70302012a"
+
+tcltest::test ext-ber-7.2 {Extensible CHOICE roundtrips raw unknown extension TLV} -body {
+    set raw [asn1::ber_wrap_context 7 [asn1::ber_encode_integer_tlv 42] 1]
+    binary encode hex [asn1::ber_encode $ast2 ChoiceExt Msg [dict create _extension $raw]]
+} -result "a70302012a"
+
+tcltest::test ext-ber-7.3 {Extensible CHOICE decodes known extension additions} -body {
+    set encoded [asn1::ber_encode $ast2 ChoiceExt MsgV2 [dict create flagged 1]]
+    dict get [asn1::ber_decode $ast2 ChoiceExt MsgV2 $encoded] value
+} -result {flagged 1}
+
+# ======================================================================
+# 8. Extension marker in SET
 # ======================================================================
 set schema5 {
     SetExt DEFINITIONS ::= BEGIN
@@ -196,5 +246,11 @@ tcltest::test ext-parse-7.2 {SET root components} -body {
 tcltest::test ext-parse-7.3 {SET extension additions} -body {
     dict keys [dict get $ast5 SetExt types Record extensionAdditions]
 } -result {note}
+
+tcltest::test ext-ber-8.1 {Extensible SET skips unknown extension TLV} -body {
+    set valueBytes [asn1::ber_encode_integer_tlv 5][asn1::ber_encode_utf8_string_tlv "new"]
+    set bytes [asn1::ber_encode_set_tlv $valueBytes]
+    dict get [asn1::ber_decode $ast5 SetExt Record $bytes] value
+} -result {id 5}
 
 tcltest::cleanupTests

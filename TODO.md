@@ -8,12 +8,6 @@ Requested must-haves from downstream users, mapped to current project status:
 
 ### Active Must Have
 
-- Clean unknown extension handling.
-  - Current status: extensible `SEQUENCE` skips unknown trailing fields; `CHOICE` extension handling is limited.
-  - Needed:
-    - robust extension-addition skipping
-    - better behavior for extensible `CHOICE`
-    - tests with unknown extension data
 - SCAPI fixture validation.
   - Current status: downstream-requested parser/BER features have focused regression tests.
   - Needed:
@@ -30,6 +24,11 @@ Requested must-haves from downstream users, mapped to current project status:
 - Symbolic `ENUMERATED` values during BER encode.
 - BER support for `UTF8String`, `NumericString`, `PrintableString`, `IA5String`, `VisibleString`, and raw-TLV `ANY`.
 - BER `DEFAULT` omission during encode and materialization during `SEQUENCE` / `SET` decode.
+- Clean unknown extension handling:
+  - extensible `SEQUENCE` and `SET` skip unknown extension TLVs with bounded BER validation
+  - known extension additions participate in BER encode/decode
+  - extensible `CHOICE` preserves unknown alternatives as raw TLV data under `_extension`
+  - regression tests cover unknown extension data and truncated unknown TLVs
 
 ### Deferred / Optional SCAPI Items
 
