@@ -2,6 +2,71 @@
 
 This file tracks ASN.1 features and cleanup work discussed but not yet implemented.
 
+## Downstream SCAPI Priorities
+
+Requested must-haves from downstream users, mapped to current project status:
+
+### Must Have
+
+- Stable public low-level BER/TLV helper API.
+  - Current status: partial/internal.
+  - Existing helpers include `ber_encode_tag`, `ber_encode_length`, `ber_decode_tag`, `ber_decode_length`, integer helpers, and skip/extract helpers.
+  - Needed:
+    - public wrapper names and documented signatures
+    - TLV read helper returning `{tag length value nextIndex}` or similar
+    - public context/application/private wrapper helpers
+    - tests for helper API stability
+- Channel framing helper.
+  - Needed: read one complete top-level BER TLV, usually a `SEQUENCE`, from a Tcl channel/socket and return complete TLV bytes.
+  - Equivalent to legacy `asnGetResponse`.
+  - Should handle short reads and long-form length.
+  - Optional: validate expected top-level tag.
+- `AUTOMATIC TAGS` semantics.
+  - Current status: parser stores `AUTOMATIC`, but does not assign automatic context-specific component tags.
+  - Needed for SCAPI request/response choices such as `registration`, `notification`, `interaction`.
+- Inline anonymous type support.
+  - Current status: component-level inline `SEQUENCE`, `SET`, and `CHOICE` are supported.
+  - Missing:
+    - `SET OF CHOICE { ... }`
+    - `SEQUENCE OF SEQUENCE { ... }`
+    - generalized inline element types for `SEQUENCE OF` / `SET OF`
+- Cross-module imported type resolution.
+  - Current status: imported symbols are merged when modules are parsed together.
+  - Needs validation for nested/transitive imported type references in SCAPI fixtures.
+  - Add unresolved-import diagnostics.
+- Symbolic `ENUMERATED` values.
+  - Current status: parser stores named enumerants, BER currently expects numeric values.
+  - Needed:
+    - encode using symbolic values like `cardValidityCheck`
+    - decode optionally returns symbolic values, or returns both symbolic and numeric
+    - policy for extension enumerants
+- More ASN.1 builtin/string types.
+  - Current status: `UTF8String` implemented; `PrintableString` and `NumericString` parse as simple type names but do not have BER support.
+  - Needed soon:
+    - `PrintableString`
+    - `NumericString`
+    - tolerate or implement `ANY`
+- `DEFAULT` handling.
+  - Current status: parser stores defaults; decode materializes defaults for missing fields in `SEQUENCE`/`SET`.
+  - Needed:
+    - encode should optionally omit default-valued fields
+    - clear API option for materialized vs omitted defaults if downstream needs it
+    - string default conversion tests, e.g. `language Iso639 DEFAULT "en"`
+- Clean unknown extension handling.
+  - Current status: extensible `SEQUENCE` skips unknown trailing fields; `CHOICE` extension handling is limited.
+  - Needed:
+    - robust extension-addition skipping
+    - better behavior for extensible `CHOICE`
+    - tests with unknown extension data
+
+### Nice To Have
+
+- DER/canonical option.
+  - See DER section below.
+- Better diagnostics.
+  - Parser errors should include module/type/field context and nearby token.
+  - Unsupported constructs should fail clearly instead of causing malformed AST later.
+
 ## Parser Syntax
 
 - Replace remaining ad hoc top-level type parsing branches with the shared `parse_type` path.
