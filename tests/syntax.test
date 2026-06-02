@@ -30,6 +30,21 @@ set syntaxSchema {
             name PrintableString (SIZE(1..50)),
             age INTEGER (0..120)
         }
+        ConstrainedRecord ::= SEQUENCE {
+            name PrintableString (SIZE(1..50)),
+            code OCTET STRING (SIZE(4)),
+            age INTEGER (0..120),
+            port INTEGER (1024..65535),
+            exact INTEGER (42)
+        }
+        ConstrainedCollections ::= SEQUENCE {
+            ids SEQUENCE OF INTEGER (SIZE(1..10)),
+            names SET OF PrintableString (SIZE(1..5))
+        }
+        ConstrainedOptions ::= SEQUENCE {
+            name [0] IMPLICIT PrintableString (SIZE(1..50)) OPTIONAL,
+            count INTEGER (0..10) DEFAULT 3
+        }
     END
 }
 
@@ -66,6 +81,34 @@ tcltest::test syntax-1.7 {Component-level SIZE constraint is parsed} -body {
 tcltest::test syntax-1.8 {Component-level RANGE constraint is parsed} -body {
     dict get $syntaxAst SyntaxModule types Record components age
 } -result {type INTEGER constraints {RANGE {0 120}}}
+
+tcltest::test syntax-2.1 {Component-level exact SIZE constraint is parsed} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedRecord components code
+} -result {type {OCTET STRING} constraints {SIZE 4}}
+
+tcltest::test syntax-2.2 {Component-level wide RANGE constraint is parsed} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedRecord components port
+} -result {type INTEGER constraints {RANGE {1024 65535}}}
+
+tcltest::test syntax-2.3 {Component-level exact RANGE constraint is parsed} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedRecord components exact
+} -result {type INTEGER constraints {RANGE 42}}
+
+tcltest::test syntax-2.4 {SEQUENCE OF component can carry SIZE constraint} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedCollections components ids
+} -result {type {SEQUENCE OF} elementType INTEGER constraints {SIZE {1 10}}}
+
+tcltest::test syntax-2.5 {SET OF component can carry SIZE constraint} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedCollections components names
+} -result {type {SET OF} elementType PrintableString constraints {SIZE {1 5}}}
+
+tcltest::test syntax-2.6 {Tagged OPTIONAL component can carry constraint} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedOptions components name
+} -result {type PrintableString constraints {SIZE {1 50}} tag {class CONTEXT-SPECIFIC number 0 mode IMPLICIT} optional true}
+
+tcltest::test syntax-2.7 {DEFAULT component can carry constraint} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedOptions components count
+} -result {type INTEGER constraints {RANGE {0 10}} default 3}
 
 tcltest::test syntax-invariant-1.1 {Valid parser AST satisfies invariants} -body {
     expr {[asn1::validate_ast $syntaxAst] eq $syntaxAst}
