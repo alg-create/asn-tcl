@@ -147,6 +147,57 @@ proc asn1::parse_tag_optional {tokensVar indexVar} {
     return $tag
 }
 
+proc asn1::parse_named_number_list {tokensVar indexVar errorsVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    set len [llength $tokens]
+    set values [dict create]
+
+    if {$i >= $len || [lindex $tokens $i] ne "\{"} {
+        return $values
+    }
+
+    incr i
+    while {$i < $len && [lindex $tokens $i] ne "\}"} {
+        set name [lindex $tokens $i]
+        incr i
+
+        if {$i < $len && [lindex $tokens $i] eq "("} {
+            incr i
+            if {$i < $len} {
+                set number [lindex $tokens $i]
+                incr i
+                dict set values $name $number
+            } else {
+                lappend errors "Missing number for named value '$name'"
+                break
+            }
+            if {$i < $len && [lindex $tokens $i] eq ")"} {
+                incr i
+            } else {
+                lappend errors "Missing closing parenthesis for named value '$name'"
+                break
+            }
+        } else {
+            lappend errors "Missing number for named value '$name'"
+            break
+        }
+
+        if {$i < $len && [lindex $tokens $i] eq ","} {
+            incr i
+        }
+    }
+
+    if {$i < $len && [lindex $tokens $i] eq "\}"} {
+        incr i
+    } else {
+        lappend errors "Missing closing brace for named number list"
+    }
+
+    return $values
+}
+
 
 # Parse the components (fields) inside a SEQUENCE or CHOICE block.
 # Reads tokens from the current index until closing brace.
@@ -253,6 +304,16 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
             incr i
         }
 
+        set parsedFieldType [dict get $fieldInfo type]
+        if {$i < $len && [lindex $tokens $i] eq "\{" && ($parsedFieldType eq "INTEGER" || $parsedFieldType eq "BIT STRING")} {
+            set namedValues [asn1::parse_named_number_list tokens i errors]
+            if {$parsedFieldType eq "BIT STRING"} {
+                dict set fieldInfo namedBits $namedValues
+            } else {
+                dict set fieldInfo namedNumbers $namedValues
+            }
+        }
+
         # Handle OPTIONAL keyword
         if {$i < $len && [lindex $tokens $i] eq "OPTIONAL"} {
             dict set fieldInfo optional true
@@ -317,6 +378,24 @@ proc asn1::parse {tokens} {
                     dict set moduleAst extensibilityImplied 1
                 }
                 set i [expr {$searchIdx + 2}]
+
+                if {$i < $len && [lindex $tokens $i] eq "EXPORTS"} {
+                    incr i
+                    set exports {}
+                    while {$i < $len && [lindex $tokens $i] ne ";" && [lindex $tokens $i] ne "END"} {
+                        set sym [lindex $tokens $i]
+                        if {$sym ne ","} {
+                            lappend exports $sym
+                        }
+                        incr i
+                    }
+                    if {$i < $len && [lindex $tokens $i] eq ";"} {
+                        incr i
+                    } else {
+                        lappend errors "EXPORTS block missing terminating semicolon"
+                    }
+                    dict set moduleAst exports $exports
+                }
 
                 # Parse IMPORTS block if present
                 if {$i < $len && [lindex $tokens $i] eq "IMPORTS"} {
@@ -518,6 +597,14 @@ proc asn1::parse {tokens} {
                             dict set moduleAst types $ident type $fieldType
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
+                            }
+                            if {$i < $len && [lindex $tokens $i] eq "\{" && ($fieldType eq "INTEGER" || $fieldType eq "BIT STRING")} {
+                                set namedValues [asn1::parse_named_number_list tokens i errors]
+                                if {$fieldType eq "BIT STRING"} {
+                                    dict set moduleAst types $ident namedBits $namedValues
+                                } else {
+                                    dict set moduleAst types $ident namedNumbers $namedValues
+                                }
                             }
                             # Parse constraints
                             if {$i < $len && [lindex $tokens $i] eq "("} {

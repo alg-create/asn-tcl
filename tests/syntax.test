@@ -1,0 +1,60 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+set syntaxSchema {
+    SyntaxModule DEFINITIONS ::= BEGIN
+        EXPORTS PublicInt, Flags, Nothing;
+
+        PublicInt ::= INTEGER
+        Nothing ::= NULL
+        Color ::= INTEGER {
+            red(0),
+            green(1),
+            blue(2)
+        }
+        Flags ::= BIT STRING {
+            read(0),
+            write(1),
+            execute(2)
+        }
+        Record ::= SEQUENCE {
+            flags BIT STRING {
+                urgent(0),
+                archived(1)
+            },
+            marker NULL
+        }
+    END
+}
+
+set syntaxAst [asn1::parse_str $syntaxSchema]
+
+tcltest::test syntax-1.1 {EXPORTS symbols are parsed} -body {
+    dict get $syntaxAst SyntaxModule exports
+} -result {PublicInt Flags Nothing}
+
+tcltest::test syntax-1.2 {NULL type assignment is parsed} -body {
+    dict get $syntaxAst SyntaxModule types Nothing
+} -result {type NULL}
+
+tcltest::test syntax-1.3 {INTEGER named number list is parsed} -body {
+    dict get $syntaxAst SyntaxModule types Color
+} -result {type INTEGER namedNumbers {red 0 green 1 blue 2}}
+
+tcltest::test syntax-1.4 {BIT STRING named bit list is parsed} -body {
+    dict get $syntaxAst SyntaxModule types Flags
+} -result {type {BIT STRING} namedBits {read 0 write 1 execute 2}}
+
+tcltest::test syntax-1.5 {Component-level BIT STRING named bit list is parsed} -body {
+    dict get $syntaxAst SyntaxModule types Record components flags
+} -result {type {BIT STRING} namedBits {urgent 0 archived 1}}
+
+tcltest::test syntax-1.6 {NULL component type is parsed} -body {
+    dict get $syntaxAst SyntaxModule types Record components marker
+} -result {type NULL}
+
+tcltest::cleanupTests
