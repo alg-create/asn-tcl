@@ -1,0 +1,37 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+
+lappend auto_path $root
+package require asn1
+
+tcltest::test full-1.4 {Module with constraints can be parsed} -body {
+    set parsed [asn1::parse_str {
+    -- Test module for constraints
+    ConstraintsModule DEFINITIONS ::= BEGIN
+        Age ::= INTEGER (0..120)
+        Name ::= PrintableString (SIZE(1..50))
+        ExactSize ::= OCTET STRING (SIZE(16))
+        Port ::= INTEGER (1024..65535)
+        -- Fixed values or alternate sizes
+        MagicNumber ::= INTEGER (42)
+        IpAddress ::= OCTET STRING (SIZE(4 | 16))
+    END}]
+    set expected [dict create \
+        ConstraintsModule [dict create \
+            tagging EXPLICIT \
+            imports {} \
+            types [dict create \
+                Age         [dict create type INTEGER constraints [dict create RANGE {0 120}]] \
+                Name        [dict create type PrintableString constraints [dict create SIZE {1 50}]] \
+                ExactSize   [dict create type {OCTET STRING} constraints [dict create SIZE 16]] \
+                Port        [dict create type INTEGER constraints [dict create RANGE {1024 65535}]] \
+                MagicNumber [dict create type INTEGER constraints [dict create RANGE 42]] \
+                IpAddress   [dict create type {OCTET STRING} [dict create SIZE {4 | 16}] \
+            ] \
+            values {} \
+        ] \
+    ]
+    return [expr {$parsed eq $expected}]
+} -result 1

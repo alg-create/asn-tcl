@@ -1,0 +1,5 @@
+package require tcltest
+
+tcltest::test sanity_check-1.1 {Test harness works} -body {
+    expr {1 + 1}
+} -result 2
