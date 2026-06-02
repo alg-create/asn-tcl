@@ -155,7 +155,7 @@ tcltest::test ext-ber-5.3 {Encode ENUMERATED extension value} -body {
 tcltest::test ext-ber-6.1 {Encode extensible SEQUENCE V1} -body {
     set val [dict create name "Alice" age 30]
     binary encode hex [asn1::ber_encode $ast1 ExtModule PersonV1 $val]
-} -result "300b0405416c696365020101e"
+} -result "300a0405416c69636502011e"
 
 # When decoding an extended message (with extra fields at the end),
 # the V1 decoder should skip unknown trailing fields gracefully.

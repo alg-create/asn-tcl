@@ -9,7 +9,7 @@ package require asn1
 tcltest::test modules-1.1 {Parse 01-simple.asn} -body {
     set filepath [file join $testdir modules 01-simple.asn]
     set parsed [asn1::parse_file $filepath]
-    set expected [dict create MyTestModule [dict create tagging EXPLICIT imports {} types [dict create MyInteger [dict create type INTEGER] MySequence [dict create type SEQUENCE components [dict create id [dict create type INTEGER] name [dict create type {OCTET STRING}] isActive [dict create type BOOLEAN] optionalField [dict create type BOOLEAN optional true]]] MyChoice [dict create type CHOICE components [dict create opt1 [dict create type MyInteger] opt2 [dict create type BOOLEAN]]]] values {}]]
+    set expected [dict create MyTestModule [dict create tagging EXPLICIT imports {} types [dict create MyInteger [dict create type INTEGER] MySequence [dict create type SEQUENCE components [dict create id [dict create type INTEGER] name [dict create type {OCTET STRING}] isActive [dict create type BOOLEAN]] extensible 1 extensionAdditions [dict create optionalField [dict create type BOOLEAN optional true]]] MyChoice [dict create type CHOICE components [dict create opt1 [dict create type MyInteger] opt2 [dict create type BOOLEAN]]]] values {}]]
     expr {$parsed eq $expected}
 } -result 1
 

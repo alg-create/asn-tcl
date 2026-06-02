@@ -159,10 +159,15 @@ proc asn1::parse_components {tokensVar indexVar errorsVar} {
     upvar 1 $errorsVar errors
     set len [llength $tokens]
     set fields [dict create]
+    set extensions [dict create]
+    set extensible 0
+    set inExtensions 0
 
     while {$i < $len && [lindex $tokens $i] ne "\}"} {
         # Skip extension markers
         if {[lindex $tokens $i] eq "..."} {
+            set extensible 1
+            set inExtensions 1
             incr i
             if {$i < $len && [lindex $tokens $i] eq ","} {
                 incr i
@@ -215,13 +220,17 @@ proc asn1::parse_components {tokensVar indexVar errorsVar} {
             }
         }
 
-        dict set fields $fieldName $fieldInfo
+        if {$inExtensions} {
+            dict set extensions $fieldName $fieldInfo
+        } else {
+            dict set fields $fieldName $fieldInfo
+        }
         if {$i < $len && [lindex $tokens $i] eq ","} {
             incr i
         }
     }
 
-    return $fields
+    return [list $fields $extensible $extensions]
 }
 
 # Parse a token stream into an AST
@@ -247,9 +256,18 @@ proc asn1::parse {tokens} {
                     incr searchIdx 2
                 }
             }
+            
+            set extensibilityImplied 0
+            if {$searchIdx + 1 < $len && [lindex $tokens $searchIdx] eq "EXTENSIBILITY" && [lindex $tokens [expr {$searchIdx+1}]] eq "IMPLIED"} {
+                set extensibilityImplied 1
+                incr searchIdx 2
+            }
 
             if {$searchIdx + 1 < $len && [lindex $tokens $searchIdx] eq "::=" && [lindex $tokens [expr {$searchIdx+1}]] eq "BEGIN"} {
                 set moduleAst [dict create tagging $tagging_ imports [dict create] types [dict create] values [dict create]]
+                if {$extensibilityImplied} {
+                    dict set moduleAst extensibilityImplied 1
+                }
                 set i [expr {$searchIdx + 2}]
 
                 # Parse IMPORTS block if present
@@ -300,12 +318,18 @@ proc asn1::parse {tokens} {
                         if {$rhsToken eq "SEQUENCE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
                             # Parse SEQUENCE
                             set i [expr {$tempIdx + 2}]
-                            set fields [asn1::parse_components tokens i errors]
+                            lassign [asn1::parse_components tokens i errors] fields extensible extensions
                             dict set moduleAst types $ident type "SEQUENCE"
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
                             }
                             dict set moduleAst types $ident components $fields
+                            if {$extensible} {
+                                dict set moduleAst types $ident extensible 1
+                                dict set moduleAst types $ident extensionAdditions $extensions
+                            } elseif {$extensibilityImplied} {
+                                dict set moduleAst types $ident extensible 1
+                            }
                             if {$i < $len && [lindex $tokens $i] eq "\}"} {
                                 incr i ;# skip closing brace
                             } else {
@@ -314,12 +338,18 @@ proc asn1::parse {tokens} {
                         } elseif {$rhsToken eq "CHOICE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
                             # Parse CHOICE
                             set i [expr {$tempIdx + 2}]
-                            set fields [asn1::parse_components tokens i errors]
+                            lassign [asn1::parse_components tokens i errors] fields extensible extensions
                             dict set moduleAst types $ident type "CHOICE"
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
                             }
                             dict set moduleAst types $ident components $fields
+                            if {$extensible} {
+                                dict set moduleAst types $ident extensible 1
+                                dict set moduleAst types $ident extensionAdditions $extensions
+                            } elseif {$extensibilityImplied} {
+                                dict set moduleAst types $ident extensible 1
+                            }
                             if {$i < $len && [lindex $tokens $i] eq "\}"} {
                                 incr i ;# skip closing brace
                             } else {
@@ -328,16 +358,68 @@ proc asn1::parse {tokens} {
                         } elseif {$rhsToken eq "SET" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
                             # Parse SET
                             set i [expr {$tempIdx + 2}]
-                            set fields [asn1::parse_components tokens i errors]
+                            lassign [asn1::parse_components tokens i errors] fields extensible extensions
                             dict set moduleAst types $ident type "SET"
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
                             }
                             dict set moduleAst types $ident components $fields
+                            if {$extensible} {
+                                dict set moduleAst types $ident extensible 1
+                                dict set moduleAst types $ident extensionAdditions $extensions
+                            } elseif {$extensibilityImplied} {
+                                dict set moduleAst types $ident extensible 1
+                            }
                             if {$i < $len && [lindex $tokens $i] eq "\}"} {
                                 incr i ;# skip closing brace
                             } else {
                                 lappend errors "Missing closing brace for SET '$ident'"
+                            }
+                        } elseif {$rhsToken eq "ENUMERATED" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
+                            # Parse ENUMERATED
+                            set i [expr {$tempIdx + 2}]
+                            set vals [dict create]
+                            set extVals [dict create]
+                            set extensible 0
+                            set inExtensions 0
+                            
+                            while {$i < $len && [lindex $tokens $i] ne "\}"} {
+                                if {[lindex $tokens $i] eq "..."} {
+                                    set extensible 1
+                                    set inExtensions 1
+                                    incr i
+                                    if {$i < $len && [lindex $tokens $i] eq ","} { incr i }
+                                    continue
+                                }
+                                set enumName [lindex $tokens $i]
+                                incr i
+                                set enumVal ""
+                                if {$i < $len && [lindex $tokens $i] eq "("} {
+                                    incr i
+                                    set enumVal [lindex $tokens $i]
+                                    incr i ;# closing )
+                                    if {$i < $len && [lindex $tokens $i] eq ")"} { incr i }
+                                }
+                                if {$inExtensions} {
+                                    dict set extVals $enumName $enumVal
+                                } else {
+                                    dict set vals $enumName $enumVal
+                                }
+                                if {$i < $len && [lindex $tokens $i] eq ","} { incr i }
+                            }
+                            dict set moduleAst types $ident type "ENUMERATED"
+                            if {$tagDict ne {}} { dict set moduleAst types $ident tag $tagDict }
+                            dict set moduleAst types $ident values $vals
+                            if {$extensible} {
+                                dict set moduleAst types $ident extensible 1
+                                dict set moduleAst types $ident extensionAdditions $extVals
+                            } elseif {$extensibilityImplied} {
+                                dict set moduleAst types $ident extensible 1
+                            }
+                            if {$i < $len && [lindex $tokens $i] eq "\}"} {
+                                incr i
+                            } else {
+                                lappend errors "Missing closing brace for ENUMERATED '$ident'"
                             }
                         } else {
                             # Simple type assignment
@@ -700,7 +782,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             
             # If IMPLICIT on CHOICE, ASN.1 standard dictates it acts as EXPLICIT
             set tempBase [dict get $innerDef type]
-            while {$tempBase ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+            while {$tempBase ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
                 set tempDef [dict get $ast $moduleName types $tempBase]
                 set tempBase [dict get $tempDef type]
             }
@@ -724,7 +806,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         }
     }
 
-    if {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+    if {$baseType ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::ber_encode_type $ast $moduleName $aliasDef $value]
     }
@@ -738,6 +820,10 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         "BOOLEAN" {
             set tagNum 1
             set valBytes [binary format c [expr {$value ? 0xFF : 0x00}]]
+        }
+        "ENUMERATED" {
+            set tagNum 10
+            set valBytes [asn1::ber_encode_integer $value]
         }
         "OCTET STRING" {
             set tagNum 4
@@ -830,7 +916,7 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         set effectiveMode $tagMode
         if {$effectiveMode eq "IMPLICIT"} {
             set tempBase [dict get $innerDef type]
-            while {$tempBase ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+            while {$tempBase ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
                 set tempDef [dict get $ast $moduleName types $tempBase]
                 set tempBase [dict get $tempDef type]
             }
@@ -853,7 +939,7 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
     }
 
     set baseType [dict get $typeDef type]
-    if {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+    if {$baseType ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::get_expected_tag $ast $moduleName $aliasDef]
     }
@@ -861,6 +947,7 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
     switch $baseType {
         "INTEGER" { return [list [list 0 0 2]] }
         "BOOLEAN" { return [list [list 0 0 1]] }
+        "ENUMERATED" { return [list [list 0 0 10]] }
         "OCTET STRING" { return [list [list 0 0 4] [list 0 32 4]] }
         "SEQUENCE" { return [list [list 0 32 16]] }
         "SET" { return [list [list 0 32 17]] }
@@ -975,7 +1062,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     }
 
     set baseType [dict get $typeDef type]
-    if {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+    if {$baseType ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::ber_decode_type $ast $moduleName $aliasDef $bytes idx]
     }
@@ -1001,6 +1088,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
 
     switch $baseType {
         "INTEGER" { return [asn1::ber_decode_integer $valBytes] }
+        "ENUMERATED" { return [asn1::ber_decode_integer $valBytes] }
         "BOOLEAN" {
             binary scan [string index $valBytes 0] c b
             return [expr {($b & 0xFF) != 0}]
@@ -1036,6 +1124,11 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 }
                 set fieldVal [asn1::ber_decode_type $ast $moduleName $fieldDef $valBytes subIdx]
                 dict set result $fieldName $fieldVal
+            }
+            if {[dict exists $typeDef extensible] && [dict get $typeDef extensible]} {
+                while {$subIdx < $valLen} {
+                    asn1::ber_skip_value $valBytes subIdx
+                }
             }
             return $result
         }
