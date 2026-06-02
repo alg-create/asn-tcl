@@ -1,0 +1,37 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+
+lappend auto_path $root
+package require asn1
+
+tcltest::test modules-1.1 {Parse 01-simple.asn} -body {
+    set filepath [file join $testdir modules 01-simple.asn]
+    set parsed [asn1::parse_file $filepath]
+    set expected [dict create MyTestModule [dict create tagging EXPLICIT imports {} types [dict create MyInteger [dict create type INTEGER] MySequence [dict create type SEQUENCE components [dict create id [dict create type INTEGER] name [dict create type {OCTET STRING}] isActive [dict create type BOOLEAN] optionalField [dict create type BOOLEAN optional true]]] MyChoice [dict create type CHOICE components [dict create opt1 [dict create type MyInteger] opt2 [dict create type BOOLEAN]]]] values {}]]
+    expr {$parsed eq $expected}
+} -result 1
+
+tcltest::test modules-1.2 {Parse 02-tagging.asn} -body {
+    set filepath [file join $testdir modules 02-tagging.asn]
+    set parsed [asn1::parse_file $filepath]
+    set expected [dict create MyTaggedModule [dict create tagging IMPLICIT imports {} types [dict create GlobalTaggedType [dict create type INTEGER tag [dict create class APPLICATION number 2 mode IMPLICIT]] ExplicitTaggedType [dict create type BOOLEAN tag [dict create class UNIVERSAL number 10 mode EXPLICIT]] DefaultTaggedType [dict create type {OCTET STRING} tag [dict create class PRIVATE number 5]] TaggedSequence [dict create type SEQUENCE components [dict create standardMember [dict create type BOOLEAN] customMember [dict create type MyIdentifier tag [dict create class PRIVATE number 14 mode IMPLICIT]]]] TaggedChoice [dict create type CHOICE components [dict create choiceA [dict create type INTEGER tag [dict create class CONTEXT-SPECIFIC number 1 mode IMPLICIT]] choiceB [dict create type MyIdentifier tag [dict create class CONTEXT-SPECIFIC number 2 mode EXPLICIT]]]] MyIdentifier [dict create type INTEGER]] values {}]]
+    expr {$parsed eq $expected}
+} -result 1
+
+tcltest::test modules-1.3 {Parse 03-imports.asn} -body {
+    set filepath [file join $testdir modules 03-imports.asn]
+    set parsed [asn1::parse_file $filepath]
+    set expected [dict create MyImportModule [dict create tagging EXPLICIT imports [dict create SourceModuleA {TypeA TypeB valC} SourceModuleB TypeD] types [dict create MySequence [dict create type SEQUENCE components [dict create field1 [dict create type TypeA] field2 [dict create type TypeD]]]] values {}]]
+    expr {$parsed eq $expected}
+} -result 1
+
+tcltest::test modules-1.4 {Parse 04-constraints.asn} -body {
+    set filepath [file join $testdir modules 04-constraints.asn]
+    set parsed [asn1::parse_file $filepath]
+    set expected [dict create ConstraintsModule [dict create tagging EXPLICIT imports {} types [dict create Age [dict create type INTEGER constraints [dict create RANGE {0 120}]] Name [dict create type PrintableString constraints [dict create SIZE {1 50}]] ExactSize [dict create type {OCTET STRING} constraints [dict create SIZE 16]] Port [dict create type INTEGER constraints [dict create RANGE {1024 65535}]] MagicNumber [dict create type INTEGER constraints [dict create RANGE 42]] IpAddress [dict create type {OCTET STRING} constraints [dict create SIZE {4 | 16}]]] values {}]]
+    expr {$parsed eq $expected}
+} -result 1
+
+tcltest::cleanupTests
