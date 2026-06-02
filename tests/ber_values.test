@@ -1,0 +1,131 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+# Schema with value assignments
+set schema {
+    ValModule DEFINITIONS ::= BEGIN
+        MyInt ::= INTEGER
+        MyBool ::= BOOLEAN
+        MyStr ::= OCTET STRING
+
+        MySeq ::= SEQUENCE {
+            id INTEGER,
+            active BOOLEAN
+        }
+
+        maxRetries INTEGER ::= 5
+        negativeVal INTEGER ::= -128
+        bigNum INTEGER ::= 256
+        zeroVal INTEGER ::= 0
+        isEnabled BOOLEAN ::= TRUE
+        isDisabled BOOLEAN ::= FALSE
+        greeting OCTET STRING ::= "hello"
+        aliasedVal MyInt ::= 42
+        myRecord MySeq ::= { id 10, active TRUE }
+    END
+}
+
+set ast [asn1::parse_str $schema]
+
+# --- Parsing Tests ---
+
+tcltest::test val-parse-1.1 {Parse INTEGER value} -body {
+    dict get $ast ValModule values maxRetries
+} -result {type INTEGER value 5}
+
+tcltest::test val-parse-1.2 {Parse negative INTEGER value} -body {
+    dict get $ast ValModule values negativeVal
+} -result {type INTEGER value -128}
+
+tcltest::test val-parse-1.3 {Parse large INTEGER value} -body {
+    dict get $ast ValModule values bigNum
+} -result {type INTEGER value 256}
+
+tcltest::test val-parse-1.4 {Parse zero INTEGER value} -body {
+    dict get $ast ValModule values zeroVal
+} -result {type INTEGER value 0}
+
+tcltest::test val-parse-2.1 {Parse BOOLEAN TRUE value} -body {
+    dict get $ast ValModule values isEnabled
+} -result {type BOOLEAN value TRUE}
+
+tcltest::test val-parse-2.2 {Parse BOOLEAN FALSE value} -body {
+    dict get $ast ValModule values isDisabled
+} -result {type BOOLEAN value FALSE}
+
+tcltest::test val-parse-3.1 {Parse OCTET STRING value} -body {
+    dict get $ast ValModule values greeting
+} -result {type {OCTET STRING} value hello}
+
+tcltest::test val-parse-4.1 {Parse aliased type value} -body {
+    dict get $ast ValModule values aliasedVal
+} -result {type MyInt value 42}
+
+tcltest::test val-parse-5.1 {Parse SEQUENCE value} -body {
+    dict get $ast ValModule values myRecord
+} -result {type MySeq value {id 10 active TRUE}}
+
+tcltest::test val-parse-6.1 {Types still parsed correctly alongside values} -body {
+    dict get $ast ValModule types MyInt type
+} -result {INTEGER}
+
+# --- BER Encoding Tests ---
+
+tcltest::test val-ber-1.1 {BER encode INTEGER value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule maxRetries]
+} -result "020105"
+
+tcltest::test val-ber-1.2 {BER encode negative INTEGER value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule negativeVal]
+} -result "020180"
+
+tcltest::test val-ber-1.3 {BER encode large INTEGER value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule bigNum]
+} -result "02020100"
+
+tcltest::test val-ber-1.4 {BER encode zero INTEGER value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule zeroVal]
+} -result "020100"
+
+tcltest::test val-ber-2.1 {BER encode BOOLEAN TRUE value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule isEnabled]
+} -result "0101ff"
+
+tcltest::test val-ber-2.2 {BER encode BOOLEAN FALSE value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule isDisabled]
+} -result "010100"
+
+tcltest::test val-ber-3.1 {BER encode OCTET STRING value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule greeting]
+} -result "040568656c6c6f"
+
+tcltest::test val-ber-4.1 {BER encode aliased type value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule aliasedVal]
+} -result "02012a"
+
+tcltest::test val-ber-5.1 {BER encode SEQUENCE value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule myRecord]
+} -result "3006020100a0101ff"
+
+# --- Round-trip Tests ---
+
+tcltest::test val-rt-1.1 {Round-trip INTEGER value} -body {
+    set encoded [asn1::ber_encode_value $ast ValModule maxRetries]
+    dict get [asn1::ber_decode $ast ValModule MyInt $encoded] value
+} -result 5
+
+tcltest::test val-rt-2.1 {Round-trip BOOLEAN value} -body {
+    set encoded [asn1::ber_encode_value $ast ValModule isEnabled]
+    dict get [asn1::ber_decode $ast ValModule MyBool $encoded] value
+} -result 1
+
+tcltest::test val-rt-3.1 {Round-trip OCTET STRING value} -body {
+    set encoded [asn1::ber_encode_value $ast ValModule greeting]
+    dict get [asn1::ber_decode $ast ValModule MyStr $encoded] value
+} -result "hello"
+
+tcltest::cleanupTests

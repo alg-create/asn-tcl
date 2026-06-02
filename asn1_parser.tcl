@@ -1,7 +1,7 @@
 package provide asn1 0.2.0
 
 namespace eval asn1 {
-    namespace export parse_file parse_str ber_encode ber_decode
+    namespace export parse_file parse_str ber_encode ber_decode ber_encode_value
 }
 
 # Tokenize the ASN.1 text into a list of tokens
@@ -399,7 +399,62 @@ proc asn1::parse {tokens} {
                             }
                         }
                     } else {
-                        incr i
+                        # Check for value assignment: valueName TYPE ::= value
+                        # or: valueName OCTET STRING ::= value
+                        set isValueAssign 0
+                        set valTypeRef ""
+                        set valAssignIdx 0
+
+                        if {$i + 2 < $len && [lindex $tokens [expr {$i+2}]] eq "::="} {
+                            # Pattern: valueName TYPE ::= value
+                            set valTypeRef [lindex $tokens [expr {$i+1}]]
+                            set valAssignIdx [expr {$i + 3}]
+                            set isValueAssign 1
+                        } elseif {$i + 3 < $len && [lindex $tokens [expr {$i+1}]] in {"OCTET" "BIT"} && [lindex $tokens [expr {$i+2}]] eq "STRING" && [lindex $tokens [expr {$i+3}]] eq "::="} {
+                            # Pattern: valueName OCTET STRING ::= value
+                            set valTypeRef "[lindex $tokens [expr {$i+1}]] STRING"
+                            set valAssignIdx [expr {$i + 4}]
+                            set isValueAssign 1
+                        }
+
+                        if {$isValueAssign && $valAssignIdx < $len} {
+                            set valName $ident
+                            # Parse the value literal
+                            set valTok [lindex $tokens $valAssignIdx]
+                            if {$valTok eq "\{"} {
+                                # Sequence/Set value: { field1 val1, field2 val2 }
+                                incr valAssignIdx ;# skip '{'
+                                set seqVal [dict create]
+                                while {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] ne "\}"} {
+                                    set fName [lindex $tokens $valAssignIdx]
+                                    incr valAssignIdx
+                                    if {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] ni {"," "\}"}} {
+                                        set fVal [lindex $tokens $valAssignIdx]
+                                        dict set seqVal $fName $fVal
+                                        incr valAssignIdx
+                                    }
+                                    if {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] eq ","} {
+                                        incr valAssignIdx
+                                    }
+                                }
+                                if {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] eq "\}"} {
+                                    incr valAssignIdx ;# skip '}'
+                                }
+                                dict set moduleAst values $valName [dict create type $valTypeRef value $seqVal]
+                                set i $valAssignIdx
+                            } else {
+                                # Simple literal value (integer, boolean, string, reference)
+                                set litVal $valTok
+                                # Strip quotes from string literals
+                                if {[string index $litVal 0] eq "\"" && [string index $litVal end] eq "\""} {
+                                    set litVal [string range $litVal 1 end-1]
+                                }
+                                dict set moduleAst values $valName [dict create type $valTypeRef value $litVal]
+                                set i [expr {$valAssignIdx + 1}]
+                            }
+                        } else {
+                            incr i
+                        }
                     }
                 }
 
@@ -477,6 +532,91 @@ proc asn1::ber_encode_integer {val} {
 proc asn1::ber_encode {ast moduleName typeName value} {
     set typeDef [dict get $ast $moduleName types $typeName]
     return [asn1::ber_encode_type $ast $moduleName $typeDef $value]
+}
+
+proc asn1::ber_encode_value {ast moduleName valueName} {
+    set valDef [dict get $ast $moduleName values $valueName]
+    set valType [dict get $valDef type]
+    set rawVal [dict get $valDef value]
+
+    # Resolve the base type to convert value literals correctly
+    set resolvedType $valType
+    if {[dict exists $ast $moduleName types $valType]} {
+        set tDef [dict get $ast $moduleName types $valType]
+        set resolvedType [dict get $tDef type]
+        while {$resolvedType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"} && [dict exists $ast $moduleName types $resolvedType]} {
+            set tDef [dict get $ast $moduleName types $resolvedType]
+            set resolvedType [dict get $tDef type]
+        }
+    }
+
+    # Convert ASN.1 boolean literals to Tcl values
+    set val [asn1::convert_value_literal $resolvedType $rawVal]
+
+    # For SEQUENCE/SET, resolve the type definition to get component info,
+    # then use ber_encode with the type name
+    if {$resolvedType in {"SEQUENCE" "SET"}} {
+        # Resolve boolean fields inside the sequence value
+        if {[dict exists $ast $moduleName types $valType]} {
+            set seqDef [dict get $ast $moduleName types $valType]
+        } else {
+            set seqDef [dict create type $valType]
+        }
+        set resolvedVal [asn1::resolve_seq_value $ast $moduleName $seqDef $val]
+        return [asn1::ber_encode $ast $moduleName $valType $resolvedVal]
+    }
+
+    # For simple types, encode using the type name if it exists in types,
+    # otherwise build a typeDef and encode directly
+    if {[dict exists $ast $moduleName types $valType]} {
+        return [asn1::ber_encode $ast $moduleName $valType $val]
+    } else {
+        set typeDef [dict create type $valType]
+        return [asn1::ber_encode_type $ast $moduleName $typeDef $val]
+    }
+}
+
+proc asn1::convert_value_literal {baseType rawVal} {
+    switch $baseType {
+        "BOOLEAN" {
+            if {$rawVal eq "TRUE"} { return 1 }
+            if {$rawVal eq "FALSE"} { return 0 }
+            return $rawVal
+        }
+        default {
+            return $rawVal
+        }
+    }
+}
+
+proc asn1::resolve_seq_value {ast moduleName seqDef val} {
+    # Resolve the actual SEQUENCE/SET type definition
+    set baseType [dict get $seqDef type]
+    while {$baseType ni {"SEQUENCE" "SET"} && [dict exists $ast $moduleName types $baseType]} {
+        set seqDef [dict get $ast $moduleName types $baseType]
+        set baseType [dict get $seqDef type]
+    }
+    if {![dict exists $seqDef components]} {
+        return $val
+    }
+    set comps [dict get $seqDef components]
+    set result [dict create]
+    dict for {fName fVal} $val {
+        if {[dict exists $comps $fName]} {
+            set fDef [dict get $comps $fName]
+            set fType [dict get $fDef type]
+            # Resolve the field's base type
+            set fBaseType $fType
+            while {$fBaseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"} && [dict exists $ast $moduleName types $fBaseType]} {
+                set tDef [dict get $ast $moduleName types $fBaseType]
+                set fBaseType [dict get $tDef type]
+            }
+            dict set result $fName [asn1::convert_value_literal $fBaseType $fVal]
+        } else {
+            dict set result $fName $fVal
+        }
+    }
+    return $result
 }
 
 proc asn1::ber_encode_type {ast moduleName typeDef value} {
