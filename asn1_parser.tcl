@@ -49,7 +49,7 @@ proc asn1::tokenize {text} {
         }
 
         # Match punctuation (excluding dot, handled above)
-        if {[string first $ch "{}()\[\],;"] != -1} {
+        if {[string first $ch "{}()\[\],;|"] != -1} {
             lappend tokens $ch
             incr i
             continue
@@ -337,6 +337,51 @@ proc asn1::parse {tokens} {
                             dict set moduleAst types $ident type $fieldType
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
+                            }
+                            # Parse constraints
+                            if {$i < $len && [lindex $tokens $i] eq "("} {
+                                set constraintDict [dict create]
+                                incr i ;# skip '('
+                                if {$i < $len && [lindex $tokens $i] eq "SIZE"} {
+                                    incr i ;# skip 'SIZE'
+                                    if {$i < $len && [lindex $tokens $i] eq "("} {
+                                        incr i ;# skip '('
+                                        set sizeList {}
+                                        while {$i < $len && [lindex $tokens $i] ne ")"} {
+                                            set tok [lindex $tokens $i]
+                                            if {$tok ne ".."} {
+                                                lappend sizeList $tok
+                                            }
+                                            incr i
+                                        }
+                                        if {[llength $sizeList] == 1} {
+                                            dict set constraintDict SIZE [lindex $sizeList 0]
+                                        } else {
+                                            dict set constraintDict SIZE $sizeList
+                                        }
+                                        if {$i < $len && [lindex $tokens $i] eq ")"} {
+                                            incr i ;# skip ')'
+                                        }
+                                    }
+                                } else {
+                                    set rangeList {}
+                                    while {$i < $len && [lindex $tokens $i] ne ")"} {
+                                        set tok [lindex $tokens $i]
+                                        if {$tok ne ".."} {
+                                            lappend rangeList $tok
+                                        }
+                                        incr i
+                                    }
+                                    if {[llength $rangeList] == 1} {
+                                        dict set constraintDict RANGE [lindex $rangeList 0]
+                                    } else {
+                                        dict set constraintDict RANGE $rangeList
+                                    }
+                                }
+                                if {$i < $len && [lindex $tokens $i] eq ")"} {
+                                    incr i ;# skip ')'
+                                }
+                                dict set moduleAst types $ident constraints $constraintDict
                             }
                         }
                     } else {
