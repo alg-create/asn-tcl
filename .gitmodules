@@ -1,0 +1,3 @@
+[submodule "deps/muttcl"]
+	path = deps/muttcl
+	url = git@github.com:alg-create/Vibe-Mut.git
