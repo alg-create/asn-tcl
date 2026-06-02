@@ -198,13 +198,145 @@ proc asn1::parse_named_number_list {tokensVar indexVar errorsVar} {
     return $values
 }
 
+proc asn1::parse_constraint_optional {tokensVar indexVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    set len [llength $tokens]
+    set constraintDict [dict create]
+
+    if {$i >= $len || [lindex $tokens $i] ne "("} {
+        return $constraintDict
+    }
+
+    incr i
+    if {$i < $len && [lindex $tokens $i] eq "SIZE"} {
+        incr i
+        if {$i < $len && [lindex $tokens $i] eq "("} {
+            incr i
+            set sizeList {}
+            while {$i < $len && [lindex $tokens $i] ne ")"} {
+                set tok [lindex $tokens $i]
+                if {$tok ne ".."} {
+                    lappend sizeList $tok
+                }
+                incr i
+            }
+            if {[llength $sizeList] == 1} {
+                dict set constraintDict SIZE [lindex $sizeList 0]
+            } else {
+                dict set constraintDict SIZE $sizeList
+            }
+            if {$i < $len && [lindex $tokens $i] eq ")"} {
+                incr i
+            }
+        }
+    } else {
+        set rangeList {}
+        while {$i < $len && [lindex $tokens $i] ne ")"} {
+            set tok [lindex $tokens $i]
+            if {$tok ne ".."} {
+                lappend rangeList $tok
+            }
+            incr i
+        }
+        if {[llength $rangeList] == 1} {
+            dict set constraintDict RANGE [lindex $rangeList 0]
+        } else {
+            dict set constraintDict RANGE $rangeList
+        }
+    }
+
+    if {$i < $len && [lindex $tokens $i] eq ")"} {
+        incr i
+    }
+
+    return $constraintDict
+}
+
+proc asn1::parse_type_name {tokensVar indexVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    set len [llength $tokens]
+
+    set typeName [lindex $tokens $i]
+    if {$typeName in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
+        set typeName "$typeName STRING"
+        incr i 2
+    } elseif {$typeName eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
+        set typeName "OBJECT IDENTIFIER"
+        incr i 2
+    } else {
+        incr i
+    }
+
+    return $typeName
+}
+
+proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""} {fieldName ""}} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    if {$moduleAstVar ne ""} {
+        upvar 1 $moduleAstVar moduleAst
+    }
+    set len [llength $tokens]
+
+    set typeName [asn1::parse_type_name tokens i]
+
+    if {$typeName in {"SEQUENCE" "SET"} && $i < $len && [lindex $tokens $i] eq "OF"} {
+        set ofType $typeName
+        incr i
+        set elemType [asn1::parse_type_name tokens i]
+        set typeInfo [dict create type "$ofType OF" elementType $elemType]
+    } elseif {$typeName in {"SEQUENCE" "SET" "CHOICE"} && $i < $len && [lindex $tokens $i] eq "\{"} {
+        if {$moduleAstVar eq "" || $parentName eq "" || $fieldName eq ""} {
+            lappend errors "Inline type '$typeName' requires a parent type name and field name"
+            return [dict create type $typeName]
+        }
+        set syntheticName "${parentName}_${fieldName}"
+        incr i
+        lassign [asn1::parse_components tokens i errors moduleAst $syntheticName] subFields subExtensible subExtensions
+        dict set moduleAst types $syntheticName type $typeName
+        dict set moduleAst types $syntheticName components $subFields
+        if {$subExtensible} {
+            dict set moduleAst types $syntheticName extensible 1
+            dict set moduleAst types $syntheticName extensionAdditions $subExtensions
+        }
+        if {$i < $len && [lindex $tokens $i] eq "\}"} {
+            incr i
+        } else {
+            lappend errors "Missing closing brace for inline $typeName '$syntheticName'"
+        }
+        set typeInfo [dict create type $syntheticName]
+    } else {
+        set typeInfo [dict create type $typeName]
+    }
+
+    set parsedType [dict get $typeInfo type]
+    if {$i < $len && [lindex $tokens $i] eq "\{" && ($parsedType eq "INTEGER" || $parsedType eq "BIT STRING")} {
+        set namedValues [asn1::parse_named_number_list tokens i errors]
+        if {$parsedType eq "BIT STRING"} {
+            dict set typeInfo namedBits $namedValues
+        } else {
+            dict set typeInfo namedNumbers $namedValues
+        }
+    }
+
+    set constraints [asn1::parse_constraint_optional tokens i]
+    if {$constraints ne {}} {
+        dict set typeInfo constraints $constraints
+    }
+
+    return $typeInfo
+}
+
 
 # Parse the components (fields) inside a SEQUENCE or CHOICE block.
 # Reads tokens from the current index until closing brace.
 # Handles extension markers (...), OPTIONAL, DEFAULT, tags, and
 # multi-word types (OCTET STRING, BIT STRING).
 # Appends any errors to the errorsVar list in the caller.
-proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""}} {
+proc asn1::parse_components_legacy {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""}} {
     upvar 1 $tokensVar tokens
     upvar 1 $indexVar i
     upvar 1 $errorsVar errors
@@ -246,15 +378,6 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
         }
 
         set fieldType [lindex $tokens $i]
-
-        # Handle OCTET STRING, BIT STRING, OBJECT IDENTIFIER
-        if {$fieldType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
-            set fieldType "$fieldType STRING"
-            incr i
-        } elseif {$fieldType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
-            set fieldType "OBJECT IDENTIFIER"
-            incr i
-        }
 
         # Handle SEQUENCE OF / SET OF
         if {$fieldType in {"SEQUENCE" "SET"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "OF"} {
@@ -321,6 +444,82 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
         }
 
         # Handle DEFAULT keyword and its value
+        if {$i < $len && [lindex $tokens $i] eq "DEFAULT"} {
+            incr i
+            if {$i < $len && [lindex $tokens $i] ni {"," "\}" "..."}} {
+                dict set fieldInfo default [lindex $tokens $i]
+                incr i
+            }
+        }
+
+        if {$inExtensions} {
+            dict set extensions $fieldName $fieldInfo
+        } else {
+            dict set fields $fieldName $fieldInfo
+        }
+        if {$i < $len && [lindex $tokens $i] eq ","} {
+            incr i
+        }
+    }
+
+    return [list $fields $extensible $extensions]
+}
+
+# Refactored component parser. This later definition replaces the original
+# implementation above and routes all component type parsing through parse_type.
+proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""}} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    if {$moduleAstVar ne ""} {
+        upvar 1 $moduleAstVar moduleAst
+    }
+    set len [llength $tokens]
+    set fields [dict create]
+    set extensions [dict create]
+    set extensible 0
+    set inExtensions 0
+
+    while {$i < $len && [lindex $tokens $i] ne "\}"} {
+        if {[lindex $tokens $i] eq "..."} {
+            set extensible 1
+            set inExtensions 1
+            incr i
+            if {$i < $len && [lindex $tokens $i] eq ","} {
+                incr i
+            }
+            continue
+        }
+
+        set fieldName [lindex $tokens $i]
+        incr i
+
+        if {$i >= $len || [lindex $tokens $i] eq "\}"} {
+            lappend errors "Unexpected end of component list after field name '$fieldName'"
+            break
+        }
+
+        set memberTag [asn1::parse_tag_optional tokens i]
+
+        if {$i >= $len || [lindex $tokens $i] eq "\}"} {
+            lappend errors "Missing type for field '$fieldName'"
+            break
+        }
+
+        if {$moduleAstVar ne ""} {
+            set fieldInfo [asn1::parse_type tokens i errors moduleAst $parentName $fieldName]
+        } else {
+            set fieldInfo [asn1::parse_type tokens i errors]
+        }
+        if {$memberTag ne {}} {
+            dict set fieldInfo tag $memberTag
+        }
+
+        if {$i < $len && [lindex $tokens $i] eq "OPTIONAL"} {
+            dict set fieldInfo optional true
+            incr i
+        }
+
         if {$i < $len && [lindex $tokens $i] eq "DEFAULT"} {
             incr i
             if {$i < $len && [lindex $tokens $i] ni {"," "\}" "..."}} {
@@ -584,72 +783,11 @@ proc asn1::parse {tokens} {
                             }
                         } else {
                             # Simple type assignment
-                            set fieldType $rhsToken
-                            if {$fieldType in {"OCTET" "BIT"} && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "STRING"} {
-                                set fieldType "$fieldType STRING"
-                                set i [expr {$tempIdx + 2}]
-                            } elseif {$fieldType eq "OBJECT" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "IDENTIFIER"} {
-                                set fieldType "OBJECT IDENTIFIER"
-                                set i [expr {$tempIdx + 2}]
-                            } else {
-                                set i [expr {$tempIdx + 1}]
-                            }
-                            dict set moduleAst types $ident type $fieldType
+                            set i $tempIdx
+                            set typeInfo [asn1::parse_type tokens i errors]
+                            dict set moduleAst types $ident $typeInfo
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
-                            }
-                            if {$i < $len && [lindex $tokens $i] eq "\{" && ($fieldType eq "INTEGER" || $fieldType eq "BIT STRING")} {
-                                set namedValues [asn1::parse_named_number_list tokens i errors]
-                                if {$fieldType eq "BIT STRING"} {
-                                    dict set moduleAst types $ident namedBits $namedValues
-                                } else {
-                                    dict set moduleAst types $ident namedNumbers $namedValues
-                                }
-                            }
-                            # Parse constraints
-                            if {$i < $len && [lindex $tokens $i] eq "("} {
-                                set constraintDict [dict create]
-                                incr i ;# skip '('
-                                if {$i < $len && [lindex $tokens $i] eq "SIZE"} {
-                                    incr i ;# skip 'SIZE'
-                                    if {$i < $len && [lindex $tokens $i] eq "("} {
-                                        incr i ;# skip '('
-                                        set sizeList {}
-                                        while {$i < $len && [lindex $tokens $i] ne ")"} {
-                                            set tok [lindex $tokens $i]
-                                            if {$tok ne ".."} {
-                                                lappend sizeList $tok
-                                            }
-                                            incr i
-                                        }
-                                        if {[llength $sizeList] == 1} {
-                                            dict set constraintDict SIZE [lindex $sizeList 0]
-                                        } else {
-                                            dict set constraintDict SIZE $sizeList
-                                        }
-                                        if {$i < $len && [lindex $tokens $i] eq ")"} {
-                                            incr i ;# skip ')'
-                                        }
-                                    }
-                                } else {
-                                    set rangeList {}
-                                    while {$i < $len && [lindex $tokens $i] ne ")"} {
-                                        set tok [lindex $tokens $i]
-                                        if {$tok ne ".."} {
-                                            lappend rangeList $tok
-                                        }
-                                        incr i
-                                    }
-                                    if {[llength $rangeList] == 1} {
-                                        dict set constraintDict RANGE [lindex $rangeList 0]
-                                    } else {
-                                        dict set constraintDict RANGE $rangeList
-                                    }
-                                }
-                                if {$i < $len && [lindex $tokens $i] eq ")"} {
-                                    incr i ;# skip ')'
-                                }
-                                dict set moduleAst types $ident constraints $constraintDict
                             }
                         }
                     } else {

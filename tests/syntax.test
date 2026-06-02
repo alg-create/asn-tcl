@@ -26,7 +26,9 @@ set syntaxSchema {
                 urgent(0),
                 archived(1)
             },
-            marker NULL
+            marker NULL,
+            name PrintableString (SIZE(1..50)),
+            age INTEGER (0..120)
         }
     END
 }
@@ -56,5 +58,13 @@ tcltest::test syntax-1.5 {Component-level BIT STRING named bit list is parsed} -
 tcltest::test syntax-1.6 {NULL component type is parsed} -body {
     dict get $syntaxAst SyntaxModule types Record components marker
 } -result {type NULL}
+
+tcltest::test syntax-1.7 {Component-level SIZE constraint is parsed} -body {
+    dict get $syntaxAst SyntaxModule types Record components name
+} -result {type PrintableString constraints {SIZE {1 50}}}
+
+tcltest::test syntax-1.8 {Component-level RANGE constraint is parsed} -body {
+    dict get $syntaxAst SyntaxModule types Record components age
+} -result {type INTEGER constraints {RANGE {0 120}}}
 
 tcltest::cleanupTests
