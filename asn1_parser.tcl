@@ -233,20 +233,20 @@ namespace eval asn1 {
             # Look for Module Definition: ModuleName DEFINITIONS ... ::= BEGIN
             if {$i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "DEFINITIONS"} {
                 set moduleName $token
-                set tagging "EXPLICIT" ;# default default
+                set tagging_ "EXPLICIT" ;# default default
                 set errors {}
                 
                 set searchIdx [expr {$i + 2}]
                 # Check for optional tagging environment
                 if {$searchIdx < $len && [lindex $tokens $searchIdx] in {"EXPLICIT" "IMPLICIT" "AUTOMATIC"}} {
                     if {$searchIdx + 1 < $len && [lindex $tokens [expr {$searchIdx+1}]] eq "TAGS"} {
-                        set tagging [lindex $tokens $searchIdx]
+                        set tagging_ [lindex $tokens $searchIdx]
                         incr searchIdx 2
                     }
                 }
                 
                 if {$searchIdx + 1 < $len && [lindex $tokens $searchIdx] eq "::=" && [lindex $tokens [expr {$searchIdx+1}]] eq "BEGIN"} {
-                    set moduleAst [dict create tagging $tagging imports [dict create] types [dict create] values [dict create]]
+                    set moduleAst [dict create tagging $tagging_ imports [dict create] types [dict create] values [dict create]]
                     set i [expr {$searchIdx + 2}]
                     
                     # Parse IMPORTS block if present
