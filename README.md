@@ -12,7 +12,7 @@ Supported parser features include:
 - `EXPORTS` and `IMPORTS`
 - Single-file parsing and multi-file parsing with import merging
 - Type assignments and simple value assignments
-- `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `OBJECT IDENTIFIER`, `NULL`
+- `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `OBJECT IDENTIFIER`, `NULL`, `UTF8String`
 - `SEQUENCE`, `SET`, `CHOICE`
 - `SEQUENCE OF` and `SET OF`
 - Inline nested `SEQUENCE`, `SET`, and `CHOICE`
@@ -25,7 +25,7 @@ Supported parser features include:
 
 Supported BER features include:
 
-- Encode/decode for `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `OBJECT IDENTIFIER`
+- Encode/decode for `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `NULL`, `OBJECT IDENTIFIER`, `UTF8String`
 - Encode/decode for `SEQUENCE`, `SET`, `CHOICE`, `SEQUENCE OF`, `SET OF`
 - Explicit and implicit tags
 - High tag numbers
@@ -37,7 +37,7 @@ Notable limitations:
 
 - DER canonical encoding is not implemented.
 - Full X.682/X.683 constraint syntax is not implemented.
-- `REAL`, many string-family BER tags, object classes, parameterization, and information object sets are not implemented.
+- `REAL`, most string-family BER tags beyond `UTF8String`, object classes, parameterization, and information object sets are not implemented.
 - Import merging only uses modules already parsed by `parse_str`, `parse_file`, or `parse_files`; it does not auto-discover files.
 
 ## Project Layout

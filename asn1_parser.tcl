@@ -1103,7 +1103,7 @@ proc asn1::ber_encode_integer {val} {
 }
 
 proc asn1::ber_builtin_types {} {
-    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "OBJECT IDENTIFIER" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
+    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "BIT STRING" "NULL" "OBJECT IDENTIFIER" "UTF8String" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
 }
 
 proc asn1::ber_encode_oid_subidentifier {val} {
@@ -1144,6 +1144,65 @@ proc asn1::ber_encode_oid {value} {
         append bytes [asn1::ber_encode_oid_subidentifier $arc]
     }
     return $bytes
+}
+
+proc asn1::ber_encode_bit_string {value} {
+    if {[llength $value] != 2} {
+        error "BIT STRING value must be a two-item list: bytes bitLength"
+    }
+    set bitBytes [lindex $value 0]
+    set bitLength [lindex $value 1]
+    if {$bitLength < 0} {
+        error "BIT STRING bit length must be non-negative"
+    }
+    set byteLength [string length $bitBytes]
+    if {$bitLength > $byteLength * 8} {
+        error "BIT STRING bit length exceeds supplied bytes"
+    }
+    set unusedBits [expr {$byteLength * 8 - $bitLength}]
+    if {$byteLength == 0} {
+        if {$bitLength != 0} {
+            error "BIT STRING with no bytes must have bit length 0"
+        }
+        set unusedBits 0
+    } elseif {$unusedBits < 0 || $unusedBits > 7} {
+        error "BIT STRING unused bit count must be between 0 and 7"
+    }
+    if {$unusedBits > 0 && $byteLength > 0} {
+        binary scan [string index $bitBytes end] c lastByte
+        set lastByte [expr {$lastByte & 0xFF}]
+        set unusedMask [expr {(1 << $unusedBits) - 1}]
+        if {($lastByte & $unusedMask) != 0} {
+            error "BIT STRING unused bits must be zero"
+        }
+    }
+    return [binary format c $unusedBits]$bitBytes
+}
+
+proc asn1::ber_decode_bit_string {valBytes} {
+    if {[string length $valBytes] == 0} {
+        error "BIT STRING value is missing unused-bit count"
+    }
+    binary scan [string index $valBytes 0] c unusedBits
+    set unusedBits [expr {$unusedBits & 0xFF}]
+    if {$unusedBits > 7} {
+        error "BIT STRING unused bit count must be between 0 and 7"
+    }
+    set bitBytes [string range $valBytes 1 end]
+    set byteLength [string length $bitBytes]
+    if {$byteLength == 0 && $unusedBits != 0} {
+        error "BIT STRING with no bytes must have unused bit count 0"
+    }
+    if {$unusedBits > 0 && $byteLength > 0} {
+        binary scan [string index $bitBytes end] c lastByte
+        set lastByte [expr {$lastByte & 0xFF}]
+        set unusedMask [expr {(1 << $unusedBits) - 1}]
+        if {($lastByte & $unusedMask) != 0} {
+            error "BIT STRING unused bits must be zero"
+        }
+    }
+    set bitLength [expr {$byteLength * 8 - $unusedBits}]
+    return [list $bitBytes $bitLength]
 }
 
 proc asn1::ber_encode {ast moduleName typeName value} {
@@ -1264,6 +1323,12 @@ proc asn1::ber_size_for_constraint {baseType value {encodingPhase 0}} {
             }
             return [string length $value]
         }
+        "BIT STRING" {
+            return [lindex $value 1]
+        }
+        "UTF8String" {
+            return [string length $value]
+        }
         "SEQUENCE OF" - "SET OF" - "OBJECT IDENTIFIER" {
             return [llength $value]
         }
@@ -1382,9 +1447,24 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             set tagNum 4
             set valBytes [encoding convertto utf-8 $value]
         }
+        "BIT STRING" {
+            set tagNum 3
+            set valBytes [asn1::ber_encode_bit_string $value]
+        }
+        "NULL" {
+            set tagNum 5
+            if {$value ne ""} {
+                error "NULL value must be empty"
+            }
+            set valBytes ""
+        }
         "OBJECT IDENTIFIER" {
             set tagNum 6
             set valBytes [asn1::ber_encode_oid $value]
+        }
+        "UTF8String" {
+            set tagNum 12
+            set valBytes [encoding convertto utf-8 $value]
         }
         "SEQUENCE" - "SET" {
             set tagNum [expr {$baseType eq "SEQUENCE" ? 16 : 17}]
@@ -1548,7 +1628,10 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         "BOOLEAN" { return [list [list 0 0 1]] }
         "ENUMERATED" { return [list [list 0 0 10]] }
         "OCTET STRING" { return [list [list 0 0 4] [list 0 32 4]] }
+        "BIT STRING" { return [list [list 0 0 3] [list 0 32 3]] }
+        "NULL" { return [list [list 0 0 5]] }
         "OBJECT IDENTIFIER" { return [list [list 0 0 6]] }
+        "UTF8String" { return [list [list 0 0 12] [list 0 32 12]] }
         "SEQUENCE" { return [list [list 0 32 16]] }
         "SET" { return [list [list 0 32 17]] }
         "SEQUENCE OF" { return [list [list 0 32 16]] }
@@ -1711,7 +1794,19 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 set decodedValue $valBytes
             }
         }
+        "BIT STRING" {
+            set decodedValue [asn1::ber_decode_bit_string $valBytes]
+        }
+        "NULL" {
+            if {[string length $valBytes] != 0} {
+                error "NULL value must have zero length"
+            }
+            set decodedValue ""
+        }
         "OBJECT IDENTIFIER" { set decodedValue [asn1::ber_decode_oid $valBytes] }
+        "UTF8String" {
+            set decodedValue [encoding convertfrom utf-8 $valBytes]
+        }
         "SEQUENCE" - "SET" {
             set result [dict create]
             set subIdx 0

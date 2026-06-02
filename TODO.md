@@ -50,10 +50,7 @@ This file tracks ASN.1 features and cleanup work discussed but not yet implement
 
 ## BER Encoder/Decoder
 
-- Add BER support for `NULL`.
-- Add BER support for `BIT STRING`, including named-bit values.
 - Add proper BER tags and validation for ASN.1 string families:
-  - `UTF8String`
   - `PrintableString`
   - `IA5String`
   - `VisibleString`
@@ -61,6 +58,7 @@ This file tracks ASN.1 features and cleanup work discussed but not yet implement
   - `UniversalString`
   - `NumericString`
   - other useful character string types
+- Add higher-level named-bit value helpers for `BIT STRING`.
 - Add BER support for `REAL`.
 - Add BER support for `RELATIVE-OID`.
 - Add indefinite-length generation mode for constructed encodings.
