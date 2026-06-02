@@ -655,6 +655,10 @@ proc asn1::parse {tokens} {
                             incr i
                             dict set moduleAst types $ident type "SEQUENCE OF"
                             dict set moduleAst types $ident elementType $elemType
+                            set constraints [asn1::parse_constraint_optional tokens i]
+                            if {$constraints ne {}} {
+                                dict set moduleAst types $ident constraints $constraints
+                            }
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
                             }
@@ -672,6 +676,10 @@ proc asn1::parse {tokens} {
                             incr i
                             dict set moduleAst types $ident type "SET OF"
                             dict set moduleAst types $ident elementType $elemType
+                            set constraints [asn1::parse_constraint_optional tokens i]
+                            if {$constraints ne {}} {
+                                dict set moduleAst types $ident constraints $constraints
+                            }
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
                             }
@@ -1228,6 +1236,68 @@ proc asn1::resolve_seq_value {ast moduleName seqDef val} {
     return $result
 }
 
+proc asn1::ber_constraint_matches {actual constraint} {
+    if {[llength $constraint] == 1} {
+        return [expr {$actual == [lindex $constraint 0]}]
+    }
+    if {[llength $constraint] == 2} {
+        set min [lindex $constraint 0]
+        set max [lindex $constraint 1]
+        return [expr {$actual >= $min && $actual <= $max}]
+    }
+    foreach item $constraint {
+        if {$item eq "|"} {
+            continue
+        }
+        if {$actual == $item} {
+            return 1
+        }
+    }
+    return 0
+}
+
+proc asn1::ber_size_for_constraint {baseType value {encodingPhase 0}} {
+    switch $baseType {
+        "OCTET STRING" {
+            if {$encodingPhase} {
+                return [string length [encoding convertto utf-8 $value]]
+            }
+            return [string length $value]
+        }
+        "SEQUENCE OF" - "SET OF" - "OBJECT IDENTIFIER" {
+            return [llength $value]
+        }
+        "SEQUENCE" - "SET" {
+            return [expr {[llength [dict keys $value]]}]
+        }
+        default {
+            return [string length $value]
+        }
+    }
+}
+
+proc asn1::ber_check_constraints {typeDef baseType value {encodingPhase 0}} {
+    if {![dict exists $typeDef constraints]} {
+        return
+    }
+
+    dict for {constraintName constraintValue} [dict get $typeDef constraints] {
+        switch $constraintName {
+            "RANGE" {
+                if {![asn1::ber_constraint_matches $value $constraintValue]} {
+                    error "RANGE constraint failed for $baseType: value $value not in $constraintValue"
+                }
+            }
+            "SIZE" {
+                set actualSize [asn1::ber_size_for_constraint $baseType $value $encodingPhase]
+                if {![asn1::ber_constraint_matches $actualSize $constraintValue]} {
+                    error "SIZE constraint failed for $baseType: size $actualSize not in $constraintValue"
+                }
+            }
+        }
+    }
+}
+
 proc asn1::ber_encode_type {ast moduleName typeDef value} {
     set baseType [dict get $typeDef type]
 
@@ -1291,6 +1361,8 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::ber_encode_type $ast $moduleName $aliasDef $value]
     }
+
+    asn1::ber_check_constraints $typeDef $baseType $value 1
 
     set tagNum 0
     switch $baseType {
@@ -1617,11 +1689,11 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     set valBytes [asn1::extract_ber_value $bytes idx $len]
 
     switch $baseType {
-        "INTEGER" { return [asn1::ber_decode_integer $valBytes] }
-        "ENUMERATED" { return [asn1::ber_decode_integer $valBytes] }
+        "INTEGER" { set decodedValue [asn1::ber_decode_integer $valBytes] }
+        "ENUMERATED" { set decodedValue [asn1::ber_decode_integer $valBytes] }
         "BOOLEAN" {
             binary scan [string index $valBytes 0] c b
-            return [expr {($b & 0xFF) != 0}]
+            set decodedValue [expr {($b & 0xFF) != 0}]
         }
         "OCTET STRING" {
             # Handle constructed OCTET STRING (tag has constructed bit set)
@@ -1634,11 +1706,12 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                     set chunk [asn1::extract_ber_value $valBytes subIdx $chunkLen]
                     append result $chunk
                 }
-                return $result
+                set decodedValue $result
+            } else {
+                set decodedValue $valBytes
             }
-            return $valBytes
         }
-        "OBJECT IDENTIFIER" { return [asn1::ber_decode_oid $valBytes] }
+        "OBJECT IDENTIFIER" { set decodedValue [asn1::ber_decode_oid $valBytes] }
         "SEQUENCE" - "SET" {
             set result [dict create]
             set subIdx 0
@@ -1661,7 +1734,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                     asn1::ber_skip_value $valBytes subIdx
                 }
             }
-            return $result
+            set decodedValue $result
         }
         "SEQUENCE OF" - "SET OF" {
             set result {}
@@ -1671,7 +1744,10 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             while {$subIdx < $valLen} {
                 lappend result [asn1::ber_decode_type $ast $moduleName $elemDef $valBytes subIdx]
             }
-            return $result
+            set decodedValue $result
         }
     }
+
+    asn1::ber_check_constraints $typeDef $baseType $decodedValue 0
+    return $decodedValue
 }

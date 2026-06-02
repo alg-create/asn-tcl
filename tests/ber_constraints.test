@@ -1,0 +1,107 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+set schema {
+    ConstraintBerModule DEFINITIONS IMPLICIT TAGS ::= BEGIN
+        Age ::= INTEGER (0..120)
+        Magic ::= INTEGER (42)
+        Token ::= OCTET STRING (SIZE(4))
+        TokenAlt ::= OCTET STRING (SIZE(4 | 8))
+        Ids ::= SEQUENCE OF INTEGER (SIZE(1..3))
+
+        Person ::= SEQUENCE {
+            age INTEGER (0..120),
+            token OCTET STRING (SIZE(4)),
+            ids SEQUENCE OF INTEGER (SIZE(1..3))
+        }
+
+        TaggedPerson ::= SEQUENCE {
+            age [0] IMPLICIT INTEGER (0..120),
+            token [1] EXPLICIT OCTET STRING (SIZE(4)) OPTIONAL
+        }
+    END
+}
+
+set ast [asn1::parse_str $schema]
+
+tcltest::test ber-constraints-encode-1.1 {Encode accepts INTEGER inside RANGE} -body {
+    binary encode hex [asn1::ber_encode $ast ConstraintBerModule Age 42]
+} -result "02012a"
+
+tcltest::test ber-constraints-encode-1.2 {Encode rejects INTEGER below RANGE} -body {
+    asn1::ber_encode $ast ConstraintBerModule Age -1
+} -returnCodes error -match glob -result {*RANGE constraint failed*}
+
+tcltest::test ber-constraints-encode-1.3 {Encode rejects INTEGER above RANGE} -body {
+    asn1::ber_encode $ast ConstraintBerModule Age 121
+} -returnCodes error -match glob -result {*RANGE constraint failed*}
+
+tcltest::test ber-constraints-encode-1.4 {Encode enforces exact RANGE constraint} -body {
+    asn1::ber_encode $ast ConstraintBerModule Magic 43
+} -returnCodes error -match glob -result {*RANGE constraint failed*}
+
+tcltest::test ber-constraints-encode-2.1 {Encode accepts OCTET STRING exact SIZE} -body {
+    binary encode hex [asn1::ber_encode $ast ConstraintBerModule Token abcd]
+} -result "040461626364"
+
+tcltest::test ber-constraints-encode-2.2 {Encode rejects OCTET STRING wrong SIZE} -body {
+    asn1::ber_encode $ast ConstraintBerModule Token abc
+} -returnCodes error -match glob -result {*SIZE constraint failed*}
+
+tcltest::test ber-constraints-encode-2.3 {Encode accepts SIZE alternatives} -body {
+    binary encode hex [asn1::ber_encode $ast ConstraintBerModule TokenAlt abcdefgh]
+} -result "04086162636465666768"
+
+tcltest::test ber-constraints-encode-3.1 {Encode accepts SEQUENCE OF inside SIZE} -body {
+    binary encode hex [asn1::ber_encode $ast ConstraintBerModule Ids {1 2 3}]
+} -result "3009020101020102020103"
+
+tcltest::test ber-constraints-encode-3.2 {Encode rejects SEQUENCE OF outside SIZE} -body {
+    asn1::ber_encode $ast ConstraintBerModule Ids {1 2 3 4}
+} -returnCodes error -match glob -result {*SIZE constraint failed*}
+
+tcltest::test ber-constraints-encode-4.1 {Encode enforces component constraints} -body {
+    set value [dict create age 40 token abcd ids {1 2}]
+    binary encode hex [asn1::ber_encode $ast ConstraintBerModule Person $value]
+} -result "30110201280404616263643006020101020102"
+
+tcltest::test ber-constraints-encode-4.2 {Encode rejects constrained component value} -body {
+    set value [dict create age 130 token abcd ids {1 2}]
+    asn1::ber_encode $ast ConstraintBerModule Person $value
+} -returnCodes error -match glob -result {*RANGE constraint failed*}
+
+tcltest::test ber-constraints-encode-4.3 {Encode enforces tagged component constraints} -body {
+    set value [dict create age 40 token abcd]
+    binary encode hex [asn1::ber_encode $ast ConstraintBerModule TaggedPerson $value]
+} -result "300b800128a106040461626364"
+
+tcltest::test ber-constraints-decode-1.1 {Decode accepts INTEGER inside RANGE} -body {
+    set bytes [binary decode hex "020178"]
+    dict get [asn1::ber_decode $ast ConstraintBerModule Age $bytes] value
+} -result 120
+
+tcltest::test ber-constraints-decode-1.2 {Decode rejects INTEGER outside RANGE} -body {
+    set bytes [binary decode hex "020179"]
+    asn1::ber_decode $ast ConstraintBerModule Age $bytes
+} -returnCodes error -match glob -result {*RANGE constraint failed*}
+
+tcltest::test ber-constraints-decode-2.1 {Decode rejects OCTET STRING wrong SIZE} -body {
+    set bytes [binary decode hex "0403616263"]
+    asn1::ber_decode $ast ConstraintBerModule Token $bytes
+} -returnCodes error -match glob -result {*SIZE constraint failed*}
+
+tcltest::test ber-constraints-decode-3.1 {Decode rejects SEQUENCE OF outside SIZE} -body {
+    set bytes [binary decode hex "300c020101020102020103020104"]
+    asn1::ber_decode $ast ConstraintBerModule Ids $bytes
+} -returnCodes error -match glob -result {*SIZE constraint failed*}
+
+tcltest::test ber-constraints-decode-4.1 {Decode enforces component constraints} -body {
+    set bytes [binary decode hex "30100201810404616263643006020101020102"]
+    asn1::ber_decode $ast ConstraintBerModule Person $bytes
+} -returnCodes error -match glob -result {*RANGE constraint failed*}
+
+tcltest::cleanupTests
