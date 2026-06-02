@@ -13,36 +13,31 @@ Requested must-haves from downstream users, mapped to current project status:
   - Needed only if downstream sockets can send indefinite-length top-level messages.
   - Would require nested EOC scanning while reading from the channel.
 - `AUTOMATIC TAGS` semantics.
-  - Current status: parser stores `AUTOMATIC`, but does not assign automatic context-specific component tags.
-  - Needed for SCAPI request/response choices such as `registration`, `notification`, `interaction`.
+  - Current status: parser assigns automatic context-specific component tags for untagged `SEQUENCE`, `SET`, and `CHOICE` components, including synthetic inline types.
+  - Remaining: add SCAPI fixture coverage once real schemas are checked in.
 - Inline anonymous type support.
-  - Current status: component-level inline `SEQUENCE`, `SET`, and `CHOICE` are supported.
-  - Missing:
-    - `SET OF CHOICE { ... }`
-    - `SEQUENCE OF SEQUENCE { ... }`
-    - generalized inline element types for `SEQUENCE OF` / `SET OF`
+  - Current status: component-level inline `SEQUENCE`, `SET`, and `CHOICE` are supported, including generalized inline element types for `SEQUENCE OF` / `SET OF` such as `SET OF CHOICE { ... }` and `SEQUENCE OF SEQUENCE { ... }`.
+  - Remaining: add fixture coverage for more deeply nested SCAPI shapes.
 - Cross-module imported type resolution.
   - Current status: imported symbols are merged when modules are parsed together.
   - Needs validation for nested/transitive imported type references in SCAPI fixtures.
   - Add unresolved-import diagnostics.
 - Symbolic `ENUMERATED` values.
-  - Current status: parser stores named enumerants, BER currently expects numeric values.
+  - Current status: parser stores named enumerants; BER encode accepts symbolic values such as `cardValidityCheck`.
   - Needed:
-    - encode using symbolic values like `cardValidityCheck`
     - decode optionally returns symbolic values, or returns both symbolic and numeric
     - policy for extension enumerants
 - More ASN.1 builtin/string types.
-  - Current status: `UTF8String` implemented; `PrintableString` and `NumericString` parse as simple type names but do not have BER support.
+  - Current status: `UTF8String`, `PrintableString`, `NumericString`, and raw-TLV `ANY` BER support are implemented.
   - Needed soon:
-    - `PrintableString`
-    - `NumericString`
-    - tolerate or implement `ANY`
+    - `IA5String`
+    - `VisibleString`
+    - additional SCAPI string families as fixtures require them
 - `DEFAULT` handling.
-  - Current status: parser stores defaults; decode materializes defaults for missing fields in `SEQUENCE`/`SET`.
+  - Current status: parser stores defaults; decode materializes defaults for missing trailing fields in `SEQUENCE`/`SET`; encode omits default-valued fields.
   - Needed:
-    - encode should optionally omit default-valued fields
     - clear API option for materialized vs omitted defaults if downstream needs it
-    - string default conversion tests, e.g. `language Iso639 DEFAULT "en"`
+    - robust handling for omitted default/optional fields in the middle of `SEQUENCE`/`SET`
 - Clean unknown extension handling.
   - Current status: extensible `SEQUENCE` skips unknown trailing fields; `CHOICE` extension handling is limited.
   - Needed:
@@ -61,6 +56,7 @@ Requested must-haves from downstream users, mapped to current project status:
 ## Parser Syntax
 
 - Replace remaining ad hoc top-level type parsing branches with the shared `parse_type` path.
+  - `SEQUENCE OF` and `SET OF` top-level assignments now use `parse_type`; structured `SEQUENCE`/`SET`/`CHOICE` and `ENUMERATED` still have explicit branches.
 - Remove `parse_components_legacy` after the active parser path is fully cleaned up.
 - Add `COMPONENTS OF` support for `SEQUENCE` and `SET`.
 - Add extension addition group syntax:

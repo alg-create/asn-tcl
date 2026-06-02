@@ -277,6 +277,13 @@ proc asn1::parse_type_name {tokensVar indexVar} {
     return $typeName
 }
 
+proc asn1::strip_string_literal {value} {
+    if {[string length $value] >= 2 && [string index $value 0] eq "\"" && [string index $value end] eq "\""} {
+        return [string range $value 1 end-1]
+    }
+    return $value
+}
+
 proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""} {fieldName ""}} {
     upvar 1 $tokensVar tokens
     upvar 1 $indexVar i
@@ -291,7 +298,29 @@ proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentNam
     if {$typeName in {"SEQUENCE" "SET"} && $i < $len && [lindex $tokens $i] eq "OF"} {
         set ofType $typeName
         incr i
-        set elemType [asn1::parse_type_name tokens i]
+        set elemToken [lindex $tokens $i]
+        if {$elemToken in {"SEQUENCE" "SET" "CHOICE"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "\{"} {
+            if {$moduleAstVar eq "" || $parentName eq "" || $fieldName eq ""} {
+                lappend errors "$ofType OF inline element type requires a parent type name and field name"
+                return [dict create type "$ofType OF" elementType $elemToken]
+            }
+            set elemType "${parentName}_${fieldName}_item"
+            incr i 2
+            lassign [asn1::parse_components tokens i errors moduleAst $elemType] subFields subExtensible subExtensions
+            dict set moduleAst types $elemType type $elemToken
+            dict set moduleAst types $elemType components $subFields
+            if {$subExtensible} {
+                dict set moduleAst types $elemType extensible 1
+                dict set moduleAst types $elemType extensionAdditions $subExtensions
+            }
+            if {$i < $len && [lindex $tokens $i] eq "\}"} {
+                incr i
+            } else {
+                lappend errors "Missing closing brace for inline $elemToken '$elemType'"
+            }
+        } else {
+            set elemType [asn1::parse_type_name tokens i]
+        }
         set typeInfo [dict create type "$ofType OF" elementType $elemType]
     } elseif {$typeName in {"SEQUENCE" "SET" "CHOICE"} && $i < $len && [lindex $tokens $i] eq "\{"} {
         if {$moduleAstVar eq "" || $parentName eq "" || $fieldName eq ""} {
@@ -452,7 +481,7 @@ proc asn1::parse_components_legacy {tokensVar indexVar errorsVar {moduleAstVar "
         if {$i < $len && [lindex $tokens $i] eq "DEFAULT"} {
             incr i
             if {$i < $len && [lindex $tokens $i] ni {"," "\}" "..."}} {
-                dict set fieldInfo default [lindex $tokens $i]
+                dict set fieldInfo default [asn1::strip_string_literal [lindex $tokens $i]]
                 incr i
             }
         }
@@ -528,7 +557,7 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
         if {$i < $len && [lindex $tokens $i] eq "DEFAULT"} {
             incr i
             if {$i < $len && [lindex $tokens $i] ni {"," "\}" "..."}} {
-                dict set fieldInfo default [lindex $tokens $i]
+                dict set fieldInfo default [asn1::strip_string_literal [lindex $tokens $i]]
                 incr i
             }
         }
@@ -544,6 +573,33 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
     }
 
     return [list $fields $extensible $extensions]
+}
+
+proc asn1::apply_automatic_tags {moduleAstVar} {
+    upvar 1 $moduleAstVar moduleAst
+    if {![dict exists $moduleAst tagging] || [dict get $moduleAst tagging] ne "AUTOMATIC"} {
+        return
+    }
+
+    foreach typeName [dict keys [dict get $moduleAst types]] {
+        set typeDef [dict get $moduleAst types $typeName]
+        if {![dict exists $typeDef type] || [dict get $typeDef type] ni {"SEQUENCE" "SET" "CHOICE"}} {
+            continue
+        }
+
+        set nextTag 0
+        foreach componentKey {components extensionAdditions} {
+            if {![dict exists $moduleAst types $typeName $componentKey]} {
+                continue
+            }
+            dict for {fieldName fieldDef} [dict get $moduleAst types $typeName $componentKey] {
+                if {![dict exists $fieldDef tag]} {
+                    dict set moduleAst types $typeName $componentKey $fieldName tag [dict create class CONTEXT-SPECIFIC number $nextTag]
+                }
+                incr nextTag
+            }
+        }
+    }
 }
 
 # Parse a token stream into an AST
@@ -648,43 +704,17 @@ proc asn1::parse {tokens} {
 
                         if {$rhsToken eq "SEQUENCE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "OF"} {
                             # Parse SEQUENCE OF
-                            set i [expr {$tempIdx + 2}]
-                            set elemType [lindex $tokens $i]
-                            if {$elemType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
-                                set elemType "$elemType STRING"
-                                incr i
-                            } elseif {$elemType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
-                                set elemType "OBJECT IDENTIFIER"
-                                incr i
-                            }
-                            incr i
-                            dict set moduleAst types $ident type "SEQUENCE OF"
-                            dict set moduleAst types $ident elementType $elemType
-                            set constraints [asn1::parse_constraint_optional tokens i]
-                            if {$constraints ne {}} {
-                                dict set moduleAst types $ident constraints $constraints
-                            }
+                            set i $tempIdx
+                            set typeInfo [asn1::parse_type tokens i errors moduleAst $ident "item"]
+                            dict set moduleAst types $ident $typeInfo
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
                             }
                         } elseif {$rhsToken eq "SET" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "OF"} {
                             # Parse SET OF
-                            set i [expr {$tempIdx + 2}]
-                            set elemType [lindex $tokens $i]
-                            if {$elemType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
-                                set elemType "$elemType STRING"
-                                incr i
-                            } elseif {$elemType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
-                                set elemType "OBJECT IDENTIFIER"
-                                incr i
-                            }
-                            incr i
-                            dict set moduleAst types $ident type "SET OF"
-                            dict set moduleAst types $ident elementType $elemType
-                            set constraints [asn1::parse_constraint_optional tokens i]
-                            if {$constraints ne {}} {
-                                dict set moduleAst types $ident constraints $constraints
-                            }
+                            set i $tempIdx
+                            set typeInfo [asn1::parse_type tokens i errors moduleAst $ident "item"]
+                            dict set moduleAst types $ident $typeInfo
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
                             }
@@ -850,10 +880,7 @@ proc asn1::parse {tokens} {
                             } else {
                                 # Simple literal value (integer, boolean, string, reference)
                                 set litVal $valTok
-                                # Strip quotes from string literals
-                                if {[string index $litVal 0] eq "\"" && [string index $litVal end] eq "\""} {
-                                    set litVal [string range $litVal 1 end-1]
-                                }
+                                set litVal [asn1::strip_string_literal $litVal]
                                 dict set moduleAst values $valName [dict create type $valTypeRef value $litVal]
                                 set i [expr {$valAssignIdx + 1}]
                             }
@@ -871,6 +898,7 @@ proc asn1::parse {tokens} {
                 if {[llength $errors] > 0} {
                     dict set moduleAst errors_ $errors
                 }
+                asn1::apply_automatic_tags moduleAst
                 dict set ast $moduleName $moduleAst
             } else {
                 incr i
@@ -1240,7 +1268,7 @@ proc asn1::ber_encode_integer {val} {
 }
 
 proc asn1::ber_builtin_types {} {
-    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "BIT STRING" "NULL" "OBJECT IDENTIFIER" "UTF8String" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
+    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "BIT STRING" "NULL" "OBJECT IDENTIFIER" "UTF8String" "NumericString" "PrintableString" "ANY" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
 }
 
 proc asn1::ber_encode_oid_subidentifier {val} {
@@ -1402,6 +1430,69 @@ proc asn1::convert_value_literal {baseType rawVal} {
     }
 }
 
+proc asn1::ber_resolve_base_type {ast moduleName typeDef} {
+    set baseType [dict get $typeDef type]
+    while {$baseType ni [asn1::ber_builtin_types] && [dict exists $ast $moduleName types $baseType]} {
+        set typeDef [dict get $ast $moduleName types $baseType]
+        set baseType [dict get $typeDef type]
+    }
+    return $baseType
+}
+
+proc asn1::enumerated_value_to_integer {typeDef value} {
+    if {[string is integer -strict $value]} {
+        return $value
+    }
+
+    set nextValue 0
+    foreach valueKey {values extensionAdditions} {
+        if {![dict exists $typeDef $valueKey]} {
+            continue
+        }
+        dict for {enumName enumValue} [dict get $typeDef $valueKey] {
+            if {$enumValue eq ""} {
+                set enumValue $nextValue
+            }
+            if {$enumName eq $value} {
+                return $enumValue
+            }
+            set nextValue [expr {$enumValue + 1}]
+        }
+    }
+
+    error "Unknown ENUMERATED symbol '$value'"
+}
+
+proc asn1::ber_validate_character_string {baseType value} {
+    switch $baseType {
+        "NumericString" {
+            if {![regexp {^[0-9 ]*$} $value]} {
+                error "NumericString value contains invalid characters"
+            }
+        }
+        "PrintableString" {
+            if {![regexp {^[A-Za-z0-9 '()+,\-./:=?]*$} $value]} {
+                error "PrintableString value contains invalid characters"
+            }
+        }
+    }
+}
+
+proc asn1::ber_decode_string_value {valBytes tagCons} {
+    if {$tagCons != 32} {
+        return $valBytes
+    }
+
+    set result ""
+    set subIdx 0
+    while {$subIdx < [string length $valBytes]} {
+        asn1::ber_decode_tag $valBytes subIdx _ _ _
+        set chunkLen [asn1::ber_decode_length $valBytes subIdx]
+        append result [asn1::extract_ber_value $valBytes subIdx $chunkLen]
+    }
+    return $result
+}
+
 proc asn1::resolve_seq_value {ast moduleName seqDef val} {
     # Resolve the actual SEQUENCE/SET type definition
     set baseType [dict get $seqDef type]
@@ -1463,7 +1554,7 @@ proc asn1::ber_size_for_constraint {baseType value {encodingPhase 0}} {
         "BIT STRING" {
             return [lindex $value 1]
         }
-        "UTF8String" {
+        "UTF8String" - "NumericString" - "PrintableString" {
             return [string length $value]
         }
         "SEQUENCE OF" - "SET OF" - "OBJECT IDENTIFIER" {
@@ -1520,32 +1611,18 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             "CONTEXT-SPECIFIC" { set tagClass 0x80 }
             "PRIVATE" { set tagClass 0xC0 }
         }
-        
-        if {$tagMode eq "EXPLICIT"} {
-            set innerDef $typeDef
-            dict unset innerDef tag
+
+        set innerDef $typeDef
+        dict unset innerDef tag
+        set innerBase [asn1::ber_resolve_base_type $ast $moduleName $innerDef]
+
+        if {$tagMode eq "EXPLICIT" || $innerBase in {"CHOICE" "ANY"}} {
             set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
             
             set tagBytes [asn1::ber_encode_tag $tagClass 0x20 $tagNum]
             set lenBytes [asn1::ber_encode_length [string length $innerBytes]]
             return ${tagBytes}${lenBytes}${innerBytes}
         } else {
-            set innerDef $typeDef
-            dict unset innerDef tag
-            
-            # If IMPLICIT on CHOICE, ASN.1 standard dictates it acts as EXPLICIT
-            set tempBase [dict get $innerDef type]
-            while {$tempBase ni [asn1::ber_builtin_types]} {
-                set tempDef [dict get $ast $moduleName types $tempBase]
-                set tempBase [dict get $tempDef type]
-            }
-            if {$tempBase eq "CHOICE"} {
-                set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
-                set tagBytes [asn1::ber_encode_tag $tagClass 0x20 $tagNum]
-                set lenBytes [asn1::ber_encode_length [string length $innerBytes]]
-                return ${tagBytes}${lenBytes}${innerBytes}
-            }
-
             set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
             
             # Since innerBytes contains the encoded inner tag, we must read past it
@@ -1564,6 +1641,10 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         return [asn1::ber_encode_type $ast $moduleName $aliasDef $value]
     }
 
+    if {$baseType eq "ANY"} {
+        return $value
+    }
+
     asn1::ber_check_constraints $typeDef $baseType $value 1
 
     set tagNum 0
@@ -1578,7 +1659,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         }
         "ENUMERATED" {
             set tagNum 10
-            set valBytes [asn1::ber_encode_integer $value]
+            set valBytes [asn1::ber_encode_integer [asn1::enumerated_value_to_integer $typeDef $value]]
         }
         "OCTET STRING" {
             set tagNum 4
@@ -1603,13 +1684,31 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             set tagNum 12
             set valBytes [encoding convertto utf-8 $value]
         }
+        "NumericString" {
+            set tagNum 18
+            asn1::ber_validate_character_string $baseType $value
+            set valBytes [encoding convertto utf-8 $value]
+        }
+        "PrintableString" {
+            set tagNum 19
+            asn1::ber_validate_character_string $baseType $value
+            set valBytes [encoding convertto utf-8 $value]
+        }
         "SEQUENCE" - "SET" {
             set tagNum [expr {$baseType eq "SEQUENCE" ? 16 : 17}]
             set valBytes ""
             set comps [dict get $typeDef components]
             dict for {fieldName fieldDef} $comps {
                 if {[dict exists $value $fieldName]} {
-                    append valBytes [asn1::ber_encode_type $ast $moduleName $fieldDef [dict get $value $fieldName]]
+                    set fieldValue [dict get $value $fieldName]
+                    if {[dict exists $fieldDef default]} {
+                        set fieldBaseType [asn1::ber_resolve_base_type $ast $moduleName $fieldDef]
+                        set defaultValue [asn1::convert_value_literal $fieldBaseType [dict get $fieldDef default]]
+                        if {$fieldValue eq $defaultValue} {
+                            continue
+                        }
+                    }
+                    append valBytes [asn1::ber_encode_type $ast $moduleName $fieldDef $fieldValue]
                 }
             }
         }
@@ -1730,15 +1829,9 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         dict unset innerDef tag
         
         set effectiveMode $tagMode
-        if {$effectiveMode eq "IMPLICIT"} {
-            set tempBase [dict get $innerDef type]
-            while {$tempBase ni [asn1::ber_builtin_types]} {
-                set tempDef [dict get $ast $moduleName types $tempBase]
-                set tempBase [dict get $tempDef type]
-            }
-            if {$tempBase eq "CHOICE"} {
-                set effectiveMode "EXPLICIT"
-            }
+        set tempBase [asn1::ber_resolve_base_type $ast $moduleName $innerDef]
+        if {$tempBase in {"CHOICE" "ANY"}} {
+            set effectiveMode "EXPLICIT"
         }
         
         if {$effectiveMode eq "EXPLICIT"} {
@@ -1769,6 +1862,9 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         "NULL" { return [list [list 0 0 5]] }
         "OBJECT IDENTIFIER" { return [list [list 0 0 6]] }
         "UTF8String" { return [list [list 0 0 12] [list 0 32 12]] }
+        "NumericString" { return [list [list 0 0 18] [list 0 32 18]] }
+        "PrintableString" { return [list [list 0 0 19] [list 0 32 19]] }
+        "ANY" { return {} }
         "SEQUENCE" { return [list [list 0 32 16]] }
         "SET" { return [list [list 0 32 17]] }
         "SEQUENCE OF" { return [list [list 0 32 16]] }
@@ -1858,15 +1954,9 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         dict unset innerDef tag
         
         set effectiveMode $tagMode
-        if {$effectiveMode eq "IMPLICIT"} {
-            set tempBase [dict get $innerDef type]
-            while {$tempBase ni [asn1::ber_builtin_types]} {
-                set tempDef [dict get $ast $moduleName types $tempBase]
-                set tempBase [dict get $tempDef type]
-            }
-            if {$tempBase eq "CHOICE"} {
-                set effectiveMode "EXPLICIT"
-            }
+        set tempBase [asn1::ber_resolve_base_type $ast $moduleName $innerDef]
+        if {$tempBase in {"CHOICE" "ANY"}} {
+            set effectiveMode "EXPLICIT"
         }
         
         if {$effectiveMode eq "EXPLICIT"} {
@@ -1887,6 +1977,12 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     if {$baseType ni [asn1::ber_builtin_types]} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::ber_decode_type $ast $moduleName $aliasDef $bytes idx]
+    }
+
+    if {$baseType eq "ANY"} {
+        set tlv [asn1::ber_decode_tlv $bytes $idx]
+        set idx [dict get $tlv nextIndex]
+        return [dict get $tlv tlv]
     }
 
     set startIdx $idx
@@ -1942,7 +2038,11 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         }
         "OBJECT IDENTIFIER" { set decodedValue [asn1::ber_decode_oid $valBytes] }
         "UTF8String" {
-            set decodedValue [encoding convertfrom utf-8 $valBytes]
+            set decodedValue [encoding convertfrom utf-8 [asn1::ber_decode_string_value $valBytes $tagCons]]
+        }
+        "NumericString" - "PrintableString" {
+            set decodedValue [encoding convertfrom utf-8 [asn1::ber_decode_string_value $valBytes $tagCons]]
+            asn1::ber_validate_character_string $baseType $decodedValue
         }
         "SEQUENCE" - "SET" {
             set result [dict create]
@@ -1953,7 +2053,8 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 if {$subIdx >= $valLen} {
                     if {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} { continue }
                     if {[dict exists $fieldDef default]} {
-                        dict set result $fieldName [dict get $fieldDef default]
+                        set fieldBaseType [asn1::ber_resolve_base_type $ast $moduleName $fieldDef]
+                        dict set result $fieldName [asn1::convert_value_literal $fieldBaseType [dict get $fieldDef default]]
                         continue
                     }
                     error "Missing mandatory field $fieldName"

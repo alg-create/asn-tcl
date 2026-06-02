@@ -1,0 +1,109 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+set downstreamSchema {
+    DownstreamModule DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+        AutoSeq ::= SEQUENCE {
+            registration INTEGER,
+            notification BOOLEAN,
+            interaction UTF8String
+        }
+
+        AutoChoice ::= CHOICE {
+            registration INTEGER,
+            notification BOOLEAN,
+            interaction UTF8String
+        }
+
+        InlineContainer ::= SEQUENCE {
+            what SET OF CHOICE {
+                code INTEGER,
+                text UTF8String
+            },
+            records SEQUENCE OF SEQUENCE {
+                id INTEGER,
+                label UTF8String
+            }
+        }
+
+        Operation ::= ENUMERATED {
+            cardValidityCheck(18),
+            crdhldrMsgWelcome(20)
+        }
+
+        Strings ::= SEQUENCE {
+            account NumericString,
+            label PrintableString,
+            raw ANY,
+            language UTF8String DEFAULT "en"
+        }
+    END
+}
+
+set ast [asn1::parse_str $downstreamSchema]
+
+tcltest::test downstream-auto-1.1 {AUTOMATIC TAGS assigns component context tags} -body {
+    list \
+        [dict get $ast DownstreamModule types AutoSeq components registration tag] \
+        [dict get $ast DownstreamModule types AutoSeq components notification tag] \
+        [dict get $ast DownstreamModule types AutoSeq components interaction tag]
+} -result {{class CONTEXT-SPECIFIC number 0} {class CONTEXT-SPECIFIC number 1} {class CONTEXT-SPECIFIC number 2}}
+
+tcltest::test downstream-auto-1.2 {AUTOMATIC TAGS encodes SEQUENCE fields implicitly} -body {
+    set value [dict create registration 5 notification 1 interaction ok]
+    binary encode hex [asn1::ber_encode $ast DownstreamModule AutoSeq $value]
+} -result "300a8001058101ff82026f6b"
+
+tcltest::test downstream-auto-1.3 {AUTOMATIC TAGS makes CHOICE alternatives context tagged} -body {
+    binary encode hex [asn1::ber_encode $ast DownstreamModule AutoChoice [dict create registration 5]]
+} -result "800105"
+
+tcltest::test downstream-inline-1.1 {SET OF inline CHOICE registers a synthetic element type} -body {
+    set elemType [dict get $ast DownstreamModule types InlineContainer components what elementType]
+    list $elemType [dict get $ast DownstreamModule types $elemType type] [lsort [dict keys [dict get $ast DownstreamModule types $elemType components]]]
+} -result {InlineContainer_what_item CHOICE {code text}}
+
+tcltest::test downstream-inline-1.2 {SEQUENCE OF inline SEQUENCE registers a synthetic element type} -body {
+    set elemType [dict get $ast DownstreamModule types InlineContainer components records elementType]
+    list $elemType [dict get $ast DownstreamModule types $elemType type] [lsort [dict keys [dict get $ast DownstreamModule types $elemType components]]]
+} -result {InlineContainer_records_item SEQUENCE {id label}}
+
+tcltest::test downstream-inline-1.3 {BER roundtrips inline SET OF CHOICE and SEQUENCE OF SEQUENCE} -body {
+    set value [dict create \
+        what [list [dict create code 7] [dict create text hi]] \
+        records [list [dict create id 1 label a] [dict create id 2 label b]]]
+    set encoded [asn1::ber_encode $ast DownstreamModule InlineContainer $value]
+    dict get [asn1::ber_decode $ast DownstreamModule InlineContainer $encoded] value
+} -result {what {{code 7} {text hi}} records {{id 1 label a} {id 2 label b}}}
+
+tcltest::test downstream-enum-1.1 {ENUMERATED accepts symbolic values on encode} -body {
+    binary encode hex [asn1::ber_encode $ast DownstreamModule Operation cardValidityCheck]
+} -result "0a0112"
+
+tcltest::test downstream-string-any-1.1 {NumericString and PrintableString encode with distinct universal tags} -body {
+    list \
+        [binary encode hex [asn1::ber_encode_type $ast DownstreamModule [dict create type NumericString] "123 45"]] \
+        [binary encode hex [asn1::ber_encode_type $ast DownstreamModule [dict create type PrintableString] "Label-1"]]
+} -result {1206313233203435 13074c6162656c2d31}
+
+tcltest::test downstream-string-any-1.2 {ANY preserves a complete nested TLV} -body {
+    set raw [asn1::ber_encode_integer_tlv 42]
+    set value [dict create account "123" label "Label" raw $raw]
+    set encoded [asn1::ber_encode $ast DownstreamModule Strings $value]
+    set decoded [dict get [asn1::ber_decode $ast DownstreamModule Strings $encoded] value]
+    binary encode hex [dict get $decoded raw]
+} -result "02012a"
+
+tcltest::test downstream-default-1.1 {DEFAULT value is omitted during encoding and materialized during decoding} -body {
+    set raw [asn1::ber_encode_integer_tlv 42]
+    set value [dict create account "123" label "Label" raw $raw language en]
+    set encoded [asn1::ber_encode $ast DownstreamModule Strings $value]
+    set decoded [dict get [asn1::ber_decode $ast DownstreamModule Strings $encoded] value]
+    list [string first "8302656e" [binary encode hex $encoded]] [dict get $decoded language]
+} -result {-1 en}
+
+tcltest::cleanupTests
