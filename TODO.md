@@ -34,10 +34,9 @@ Requested must-haves from downstream users, mapped to current project status:
     - `VisibleString`
     - additional SCAPI string families as fixtures require them
 - `DEFAULT` handling.
-  - Current status: parser stores defaults; encode omits default-valued fields; `SEQUENCE` decode uses tags to skip absent `OPTIONAL`/`DEFAULT` fields and materialize defaults.
+  - Current status: parser stores defaults; encode omits default-valued fields; `SEQUENCE` and `SET` decode use tags to skip absent `OPTIONAL`/`DEFAULT` fields and materialize defaults.
   - Needed:
     - clear API option for materialized vs omitted defaults if downstream needs it
-    - equivalent tag-aware default/optional handling for `SET` when `SET` decode is made order-independent
 - Clean unknown extension handling.
   - Current status: extensible `SEQUENCE` skips unknown trailing fields; `CHOICE` extension handling is limited.
   - Needed:
@@ -114,7 +113,7 @@ Requested must-haves from downstream users, mapped to current project status:
 - Add BER support for `REAL`.
 - Add BER support for `RELATIVE-OID`.
 - Add indefinite-length generation mode for constructed encodings.
-- Improve `SET` decode behavior so component order is not assumed.
+- Improve diagnostics for ambiguous untagged `SET` components that share the same BER tag.
 - Add stricter validation for trailing bytes inside `SEQUENCE`, `SET`, and `SEQUENCE OF` values.
 - Add canonical boolean/integer validation on decode where appropriate.
 - Expand constraint enforcement as the parser gains richer constraint ASTs.

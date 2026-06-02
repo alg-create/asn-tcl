@@ -29,7 +29,8 @@ Supported BER features include:
 - Encode/decode for `SEQUENCE`, `SET`, `CHOICE`, `SEQUENCE OF`, `SET OF`
 - Symbolic `ENUMERATED` values during encoding
 - Automatic context tags for modules declared with `AUTOMATIC TAGS`
-- Default-valued fields are omitted during encoding; `SEQUENCE` decode uses tags to skip absent `OPTIONAL`/`DEFAULT` fields and materialize defaults
+- Default-valued fields are omitted during encoding; `SEQUENCE` and `SET` decode use tags to skip absent `OPTIONAL`/`DEFAULT` fields and materialize defaults
+- `SET` decode is order-independent for components with distinguishable BER tags
 - Public low-level TLV helpers for tags, lengths, primitive TLVs, constructed TLVs, wrappers, and channel reads
 - Explicit and implicit tags
 - High tag numbers

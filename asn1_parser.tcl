@@ -1976,6 +1976,40 @@ proc asn1::ber_component_default_value {ast moduleName fieldDef} {
     return [asn1::convert_value_literal $fieldBaseType [dict get $fieldDef default]]
 }
 
+proc asn1::ber_set_find_component {ast moduleName comps seenFields parsedTag} {
+    set anyCandidate ""
+    dict for {fieldName fieldDef} $comps {
+        if {[dict exists $seenFields $fieldName]} {
+            continue
+        }
+        if {[asn1::ber_type_accepts_any_tag $ast $moduleName $fieldDef]} {
+            if {$anyCandidate eq ""} {
+                set anyCandidate $fieldName
+            }
+            continue
+        }
+        if {[asn1::ber_tag_matches_type $ast $moduleName $fieldDef $parsedTag]} {
+            return $fieldName
+        }
+    }
+    return $anyCandidate
+}
+
+proc asn1::ber_set_tag_is_duplicate {ast moduleName comps seenFields parsedTag} {
+    dict for {fieldName fieldDef} $comps {
+        if {![dict exists $seenFields $fieldName]} {
+            continue
+        }
+        if {[asn1::ber_type_accepts_any_tag $ast $moduleName $fieldDef]} {
+            continue
+        }
+        if {[asn1::ber_tag_matches_type $ast $moduleName $fieldDef $parsedTag]} {
+            return 1
+        }
+    }
+    return 0
+}
+
 proc asn1::ber_skip_value {bytes idxVar} {
     upvar 1 $idxVar idx
     asn1::ber_decode_tag $bytes idx _ _ _
@@ -2170,25 +2204,42 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             set decodedValue $result
         }
         "SET" {
-            set result [dict create]
+            set decodedFields [dict create]
+            set seenFields [dict create]
             set subIdx 0
             set comps [dict get $typeDef components]
             set valLen [string length $valBytes]
-            dict for {fieldName fieldDef} $comps {
-                if {$subIdx >= $valLen} {
-                    if {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} { continue }
-                    if {[dict exists $fieldDef default]} {
-                        dict set result $fieldName [asn1::ber_component_default_value $ast $moduleName $fieldDef]
+
+            while {$subIdx < $valLen} {
+                set nextTag [asn1::ber_peek_tag $valBytes $subIdx]
+                set fieldName [asn1::ber_set_find_component $ast $moduleName $comps $seenFields $nextTag]
+                if {$fieldName eq ""} {
+                    if {[asn1::ber_set_tag_is_duplicate $ast $moduleName $comps $seenFields $nextTag]} {
+                        error "Duplicate SET field tag $nextTag"
+                    }
+                    if {[dict exists $typeDef extensible] && [dict get $typeDef extensible]} {
+                        asn1::ber_skip_value $valBytes subIdx
                         continue
                     }
-                    error "Missing mandatory field $fieldName"
+                    error "Unexpected SET field tag $nextTag"
                 }
+
+                set fieldDef [dict get $comps $fieldName]
                 set fieldVal [asn1::ber_decode_type $ast $moduleName $fieldDef $valBytes subIdx]
-                dict set result $fieldName $fieldVal
+                dict set decodedFields $fieldName $fieldVal
+                dict set seenFields $fieldName true
             }
-            if {[dict exists $typeDef extensible] && [dict get $typeDef extensible]} {
-                while {$subIdx < $valLen} {
-                    asn1::ber_skip_value $valBytes subIdx
+
+            set result [dict create]
+            dict for {fieldName fieldDef} $comps {
+                if {[dict exists $decodedFields $fieldName]} {
+                    dict set result $fieldName [dict get $decodedFields $fieldName]
+                } elseif {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} {
+                    continue
+                } elseif {[dict exists $fieldDef default]} {
+                    dict set result $fieldName [asn1::ber_component_default_value $ast $moduleName $fieldDef]
+                } else {
+                    error "Missing mandatory field $fieldName"
                 }
             }
             set decodedValue $result
