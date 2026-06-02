@@ -258,6 +258,63 @@ proc asn1::parse_constraint_optional {tokensVar indexVar} {
     return $constraintDict
 }
 
+proc asn1::parse_bare_size_constraint_optional {tokensVar indexVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    set len [llength $tokens]
+    set constraintDict [dict create]
+
+    if {$i >= $len || [lindex $tokens $i] ne "SIZE"} {
+        return $constraintDict
+    }
+
+    incr i
+    if {$i < $len && [lindex $tokens $i] eq "("} {
+        incr i
+        set sizeList {}
+        while {$i < $len && [lindex $tokens $i] ne ")"} {
+            set tok [lindex $tokens $i]
+            if {$tok ne ".."} {
+                lappend sizeList $tok
+            }
+            incr i
+        }
+        if {[llength $sizeList] == 1} {
+            dict set constraintDict SIZE [lindex $sizeList 0]
+        } else {
+            dict set constraintDict SIZE $sizeList
+        }
+        if {$i < $len && [lindex $tokens $i] eq ")"} {
+            incr i
+        }
+    }
+
+    return $constraintDict
+}
+
+proc asn1::parse_collection_constraint_before_of {tokensVar indexVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    set len [llength $tokens]
+    set savedIdx $i
+    set constraints [dict create]
+
+    if {$i < $len && [lindex $tokens $i] eq "(" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "SIZE"} {
+        set constraints [asn1::parse_constraint_optional tokens i]
+    } elseif {$i < $len && [lindex $tokens $i] eq "SIZE"} {
+        set constraints [asn1::parse_bare_size_constraint_optional tokens i]
+    } else {
+        return $constraints
+    }
+
+    if {$i < $len && [lindex $tokens $i] eq "OF"} {
+        return $constraints
+    }
+
+    set i $savedIdx
+    return [dict create]
+}
+
 proc asn1::parse_type_name {tokensVar indexVar} {
     upvar 1 $tokensVar tokens
     upvar 1 $indexVar i
@@ -294,6 +351,10 @@ proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentNam
     set len [llength $tokens]
 
     set typeName [asn1::parse_type_name tokens i]
+    set leadingConstraints [dict create]
+    if {$typeName in {"SEQUENCE" "SET"}} {
+        set leadingConstraints [asn1::parse_collection_constraint_before_of tokens i]
+    }
 
     if {$typeName in {"SEQUENCE" "SET"} && $i < $len && [lindex $tokens $i] eq "OF"} {
         set ofType $typeName
@@ -356,7 +417,11 @@ proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentNam
         }
     }
 
-    set constraints [asn1::parse_constraint_optional tokens i]
+    set constraints $leadingConstraints
+    set trailingConstraints [asn1::parse_constraint_optional tokens i]
+    dict for {constraintName constraintValue} $trailingConstraints {
+        dict set constraints $constraintName $constraintValue
+    }
     if {$constraints ne {}} {
         dict set typeInfo constraints $constraints
     }

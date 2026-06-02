@@ -39,8 +39,11 @@ set syntaxSchema {
         }
         ConstrainedCollections ::= SEQUENCE {
             ids SEQUENCE OF INTEGER (SIZE(1..10)),
-            names SET OF PrintableString (SIZE(1..5))
+            names SET OF PrintableString (SIZE(1..5)),
+            missing SEQUENCE (SIZE(1..25)) OF ParameterName,
+            bareSize SET SIZE (2..8) OF ParameterName
         }
+        ParameterName ::= UTF8String
         ConstrainedOptions ::= SEQUENCE {
             name [0] IMPLICIT PrintableString (SIZE(1..50)) OPTIONAL,
             count INTEGER (0..10) DEFAULT 3
@@ -102,11 +105,19 @@ tcltest::test syntax-2.5 {SET OF component can carry SIZE constraint} -body {
     dict get $syntaxAst SyntaxModule types ConstrainedCollections components names
 } -result {type {SET OF} elementType PrintableString constraints {SIZE {1 5}}}
 
-tcltest::test syntax-2.6 {Tagged OPTIONAL component can carry constraint} -body {
+tcltest::test syntax-2.6 {SEQUENCE can carry SIZE constraint before OF} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedCollections components missing
+} -result {type {SEQUENCE OF} elementType ParameterName constraints {SIZE {1 25}}}
+
+tcltest::test syntax-2.7 {SET can carry bare SIZE constraint before OF} -body {
+    dict get $syntaxAst SyntaxModule types ConstrainedCollections components bareSize
+} -result {type {SET OF} elementType ParameterName constraints {SIZE {2 8}}}
+
+tcltest::test syntax-2.8 {Tagged OPTIONAL component can carry constraint} -body {
     dict get $syntaxAst SyntaxModule types ConstrainedOptions components name
 } -result {type PrintableString constraints {SIZE {1 50}} tag {class CONTEXT-SPECIFIC number 0 mode IMPLICIT} optional true}
 
-tcltest::test syntax-2.7 {DEFAULT component can carry constraint} -body {
+tcltest::test syntax-2.9 {DEFAULT component can carry constraint} -body {
     dict get $syntaxAst SyntaxModule types ConstrainedOptions components count
 } -result {type INTEGER constraints {RANGE {0 10}} default 3}
 
