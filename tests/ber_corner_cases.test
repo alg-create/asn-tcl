@@ -1,0 +1,71 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+# Schema for corner cases
+set schema {
+    CornerCases DEFINITIONS ::= BEGIN
+        HighTagInt ::= [APPLICATION 100] IMPLICIT INTEGER
+        HighTagSeq ::= [PRIVATE 1000] EXPLICIT SEQUENCE {
+            val INTEGER
+        }
+
+        MySeq ::= SEQUENCE {
+            id INTEGER,
+            active BOOLEAN
+        }
+        
+        MyStr ::= OCTET STRING
+    END
+}
+
+set ast [asn1::parse_str $schema]
+
+# --- High Tag Encode/Decode ---
+# Tag 100: Application (0x40), Primitive (0x00) -> 0x40. Tag > 30 so first byte is 0x40 | 0x1F = 0x5F.
+# 100 is 0x64. So bytes: 5F 64. 
+tcltest::test corner-tag-1.1 {Encode high tag primitive} -body {
+    binary encode hex [asn1::ber_encode $ast CornerCases HighTagInt 42]
+} -result "5f64012a"
+
+tcltest::test corner-tag-1.2 {Decode high tag primitive} -body {
+    set bytes [binary decode hex "5f64012a"]
+    dict get [asn1::ber_decode $ast CornerCases HighTagInt $bytes] value
+} -result 42
+
+# Tag 1000: Private (0xC0), Constructed (0x20) -> 0xE0. First byte: 0xE0 | 0x1F = 0xFF.
+# 1000 is 11 1110 1000 in binary. Base 128: 0000111 (7) and 1101000 (104, 0x68). 
+# Bytes: 0xFF, 0x87, 0x68.
+# Sequence contains INTEGER(42) -> 02 01 2a. Inner length is 3. Total length is 3.
+tcltest::test corner-tag-2.1 {Encode high tag constructed} -body {
+    set val [dict create val 42]
+    binary encode hex [asn1::ber_encode $ast CornerCases HighTagSeq $val]
+} -result "ff87680302012a"
+
+tcltest::test corner-tag-2.2 {Decode high tag constructed} -body {
+    set bytes [binary decode hex "ff87680302012a"]
+    dict get [asn1::ber_decode $ast CornerCases HighTagSeq $bytes] value
+} -result {val 42}
+
+# --- Indefinite Length Decoding ---
+# MySeq { id 10, active TRUE } -> 02010a 0101ff
+# Using indefinite length sequence: 30 80 02010a 0101ff 00 00
+tcltest::test corner-len-1.1 {Decode indefinite length SEQUENCE} -body {
+    set bytes [binary decode hex "308002010a0101ff0000"]
+    dict get [asn1::ber_decode $ast CornerCases MySeq $bytes] value
+} -result {id 10 active 1}
+
+# Indefinite length OCTET STRING (constructed)
+# tag: 0x24 (0x04 | 0x20)
+# length: 0x80
+# contents: "hel" (0x04 0x03 68656c), "lo" (0x04 0x02 6c6f)
+# EOC: 0x00 0x00
+tcltest::test corner-len-2.1 {Decode constructed indefinite length OCTET STRING} -body {
+    set bytes [binary decode hex "2480040368656c04026c6f0000"]
+    dict get [asn1::ber_decode $ast CornerCases MyStr $bytes] value
+} -result "hello"
+
+tcltest::cleanupTests

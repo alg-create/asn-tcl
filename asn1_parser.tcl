@@ -505,6 +505,52 @@ proc asn1::ber_encode_length {len} {
     return [binary format c [expr {0x80 | $numBytes}]]$bytes
 }
 
+proc asn1::ber_encode_tag {tagClass constructedBit tagNum} {
+    if {$tagNum < 31} {
+        return [binary format c [expr {$tagClass | $constructedBit | $tagNum}]]
+    }
+    set bytes [binary format c [expr {$tagClass | $constructedBit | 31}]]
+    set temp $tagNum
+    set tagBytes {}
+    while {$temp > 0} {
+        set b [expr {$temp & 0x7F}]
+        set temp [expr {$temp >> 7}]
+        if {[string length $tagBytes] > 0} {
+            set b [expr {$b | 0x80}]
+        }
+        set tagBytes [binary format c $b]$tagBytes
+    }
+    return $bytes$tagBytes
+}
+
+proc asn1::ber_decode_tag {bytes idxVar classVar consVar numVar} {
+    upvar 1 $idxVar idx
+    upvar 1 $classVar class
+    upvar 1 $consVar cons
+    upvar 1 $numVar num
+    
+    binary scan [string index $bytes $idx] c tagByte
+    set tagByte [expr {$tagByte & 0xFF}]
+    incr idx
+    
+    set class [expr {$tagByte & 0xC0}]
+    set cons [expr {$tagByte & 0x20}]
+    set num [expr {$tagByte & 0x1F}]
+    
+    if {$num == 31} {
+        set num 0
+        while {1} {
+            binary scan [string index $bytes $idx] c b
+            set b [expr {$b & 0xFF}]
+            incr idx
+            set num [expr {($num << 7) | ($b & 0x7F)}]
+            if {($b & 0x80) == 0} {
+                break
+            }
+        }
+    }
+}
+
 proc asn1::ber_encode_integer {val} {
     if {$val == 0} {
         return [binary format c 0]
@@ -645,9 +691,9 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             dict unset innerDef tag
             set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
             
-            set tagByte [expr {$tagClass | 0x20 | $tagNum}]
+            set tagBytes [asn1::ber_encode_tag $tagClass 0x20 $tagNum]
             set lenBytes [asn1::ber_encode_length [string length $innerBytes]]
-            return [binary format c $tagByte]${lenBytes}${innerBytes}
+            return ${tagBytes}${lenBytes}${innerBytes}
         } else {
             set innerDef $typeDef
             dict unset innerDef tag
@@ -660,16 +706,21 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             }
             if {$tempBase eq "CHOICE"} {
                 set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
-                set tagByte [expr {$tagClass | 0x20 | $tagNum}]
+                set tagBytes [asn1::ber_encode_tag $tagClass 0x20 $tagNum]
                 set lenBytes [asn1::ber_encode_length [string length $innerBytes]]
-                return [binary format c $tagByte]${lenBytes}${innerBytes}
+                return ${tagBytes}${lenBytes}${innerBytes}
             }
 
             set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
-            binary scan [string index $innerBytes 0] c innerTagByte
-            set constructedBit [expr {$innerTagByte & 0x20}]
-            set tagByte [expr {$tagClass | $constructedBit | $tagNum}]
-            return [binary format c $tagByte][string range $innerBytes 1 end]
+            
+            # Since innerBytes contains the encoded inner tag, we must read past it
+            # to replace it with our implicit tag.
+            set tagIdx 0
+            asn1::ber_decode_tag $innerBytes tagIdx _ innerCons _
+            
+            set constructedBit $innerCons
+            set tagBytes [asn1::ber_encode_tag $tagClass $constructedBit $tagNum]
+            return ${tagBytes}[string range $innerBytes $tagIdx end]
         }
     }
 
@@ -711,13 +762,9 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         }
     }
 
-    set tagByte $tagNum
-    if {$baseType in {"SEQUENCE" "SET"}} {
-        set tagByte [expr {$tagByte | 0x20}]
-    }
-
+    set tagBytes [asn1::ber_encode_tag 0x00 [expr {$baseType in {"SEQUENCE" "SET"} ? 0x20 : 0x00}] $tagNum]
     set lenBytes [asn1::ber_encode_length [string length $valBytes]]
-    return [binary format c $tagByte]${lenBytes}${valBytes}
+    return ${tagBytes}${lenBytes}${valBytes}
 }
 
 # --- BER Decoder ---
@@ -727,6 +774,9 @@ proc asn1::ber_decode_length {bytes idxVar} {
     binary scan [string index $bytes $idx] c b
     set b [expr {$b & 0xFF}]
     incr idx
+    if {$b == 128} {
+        return -1 ;# Indefinite length
+    }
     if {$b < 128} {
         return $b
     }
@@ -768,10 +818,10 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         set tagClassStr [dict get $tagDict class]
         set tagNum [dict get $tagDict number]
         switch $tagClassStr {
-            "UNIVERSAL" { set tagClass 0x00 }
-            "APPLICATION" { set tagClass 0x40 }
-            "CONTEXT-SPECIFIC" { set tagClass 0x80 }
-            "PRIVATE" { set tagClass 0xC0 }
+            "UNIVERSAL" { set tagClass 0 }
+            "APPLICATION" { set tagClass 64 }
+            "CONTEXT-SPECIFIC" { set tagClass 128 }
+            "PRIVATE" { set tagClass 192 }
         }
         
         set innerDef $typeDef
@@ -790,13 +840,13 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         }
         
         if {$effectiveMode eq "EXPLICIT"} {
-            return [list [expr {$tagClass | 0x20 | $tagNum}]]
+            return [list [list $tagClass 32 $tagNum]]
         } else {
             set innerTags [asn1::get_expected_tag $ast $moduleName $innerDef]
             set res {}
             foreach itag $innerTags {
-                set constructedBit [expr {$itag & 0x20}]
-                lappend res [expr {$tagClass | $constructedBit | $tagNum}]
+                set constructedBit [lindex $itag 1]
+                lappend res [list $tagClass $constructedBit $tagNum]
             }
             return $res
         }
@@ -809,11 +859,11 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
     }
 
     switch $baseType {
-        "INTEGER" { return [list 2] }
-        "BOOLEAN" { return [list 1] }
-        "OCTET STRING" { return [list 4] }
-        "SEQUENCE" { return [list [expr {16 | 0x20}]] }
-        "SET" { return [list [expr {17 | 0x20}]] }
+        "INTEGER" { return [list [list 0 0 2]] }
+        "BOOLEAN" { return [list [list 0 0 1]] }
+        "OCTET STRING" { return [list [list 0 0 4] [list 0 32 4]] }
+        "SEQUENCE" { return [list [list 0 32 16]] }
+        "SET" { return [list [list 0 32 17]] }
         "CHOICE" {
             set tags {}
             set comps [dict get $typeDef components]
@@ -833,6 +883,46 @@ proc asn1::ber_decode {ast moduleName typeName bytes} {
     return [dict create value $val remainder $remainder]
 }
 
+proc asn1::ber_skip_value {bytes idxVar} {
+    upvar 1 $idxVar idx
+    asn1::ber_decode_tag $bytes idx _ _ _
+    set len [asn1::ber_decode_length $bytes idx]
+    if {$len == -1} {
+        while {1} {
+            binary scan [string index $bytes $idx] c b1
+            binary scan [string index $bytes [expr {$idx+1}]] c b2
+            if {($b1 & 0xFF) == 0 && ($b2 & 0xFF) == 0} {
+                incr idx 2
+                break
+            }
+            asn1::ber_skip_value $bytes idx
+        }
+    } else {
+        incr idx $len
+    }
+}
+
+proc asn1::extract_ber_value {bytes idxVar len} {
+    upvar 1 $idxVar idx
+    if {$len >= 0} {
+        set valBytes [string range $bytes $idx [expr {$idx + $len - 1}]]
+        incr idx $len
+        return $valBytes
+    } else {
+        set startIdx $idx
+        while {1} {
+            binary scan [string index $bytes $idx] c b1
+            binary scan [string index $bytes [expr {$idx+1}]] c b2
+            if {($b1 & 0xFF) == 0 && ($b2 & 0xFF) == 0} {
+                set valBytes [string range $bytes $startIdx [expr {$idx - 1}]]
+                incr idx 2 ;# Skip EOC
+                return $valBytes
+            }
+            asn1::ber_skip_value $bytes idx
+        }
+    }
+}
+
 proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     upvar 1 $idxVar idx
 
@@ -844,18 +934,16 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             set tagMode [dict get $ast $moduleName tagging]
         }
         
-        binary scan [string index $bytes $idx] c tagByte
-        set tagByte [expr {$tagByte & 0xFF}]
+        asn1::ber_decode_tag $bytes idx tagClass tagCons tagNum
+        set parsedTag [list $tagClass $tagCons $tagNum]
         
         set expectedTags [asn1::get_expected_tag $ast $moduleName $typeDef]
-        if {$tagByte ni $expectedTags} {
-            error "Expected tag $expectedTags but got $tagByte"
+        if {[lsearch -exact $expectedTags $parsedTag] == -1} {
+            error "Expected tag $expectedTags but got $parsedTag"
         }
         
-        incr idx
         set len [asn1::ber_decode_length $bytes idx]
-        set valBytes [string range $bytes $idx [expr {$idx + $len - 1}]]
-        incr idx $len
+        set valBytes [asn1::extract_ber_value $bytes idx $len]
         
         set innerDef $typeDef
         dict unset innerDef tag
@@ -878,7 +966,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         } else {
             set innerTags [asn1::get_expected_tag $ast $moduleName $innerDef]
             set fakeTag [lindex $innerTags 0]
-            set fakeTagByte [binary format c $fakeTag]
+            set fakeTagByte [asn1::ber_encode_tag [lindex $fakeTag 0] [lindex $fakeTag 1] [lindex $fakeTag 2]]
             set fakeLenBytes [asn1::ber_encode_length [string length $valBytes]]
             set fakeBytes ${fakeTagByte}${fakeLenBytes}${valBytes}
             set subIdx 0
@@ -892,24 +980,24 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         return [asn1::ber_decode_type $ast $moduleName $aliasDef $bytes idx]
     }
 
-    binary scan [string index $bytes $idx] c tagByte
-    set tagByte [expr {$tagByte & 0xFF}]
+    set startIdx $idx
+    asn1::ber_decode_tag $bytes idx tagClass tagCons tagNum
+    set parsedTag [list $tagClass $tagCons $tagNum]
     
     if {$baseType eq "CHOICE"} {
         set comps [dict get $typeDef components]
         dict for {fieldName fieldDef} $comps {
             set expectedTags [asn1::get_expected_tag $ast $moduleName $fieldDef]
-            if {$tagByte in $expectedTags} {
+            if {[lsearch -exact $expectedTags $parsedTag] != -1} {
+                set idx $startIdx ;# Backtrack
                 return [dict create $fieldName [asn1::ber_decode_type $ast $moduleName $fieldDef $bytes idx]]
             }
         }
-        error "No matching tag $tagByte in CHOICE"
+        error "No matching tag $parsedTag in CHOICE"
     }
 
-    incr idx
     set len [asn1::ber_decode_length $bytes idx]
-    set valBytes [string range $bytes $idx [expr {$idx + $len - 1}]]
-    incr idx $len
+    set valBytes [asn1::extract_ber_value $bytes idx $len]
 
     switch $baseType {
         "INTEGER" { return [asn1::ber_decode_integer $valBytes] }
