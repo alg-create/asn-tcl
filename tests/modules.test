@@ -23,7 +23,7 @@ tcltest::test modules-1.2 {Parse 02-tagging.asn} -body {
 tcltest::test modules-1.3 {Parse 03-imports.asn} -body {
     set filepath [file join $testdir modules 03-imports.asn]
     set parsed [asn1::parse_file $filepath]
-    set expected [dict create MyImportModule [dict create tagging EXPLICIT imports [dict create SourceModuleA {TypeA TypeB valC} SourceModuleB TypeD] types [dict create MySequence [dict create type SEQUENCE components [dict create field1 [dict create type TypeA] field2 [dict create type TypeD]]]] values {}]]
+    set expected [dict create MyImportModule [dict create tagging EXPLICIT imports [dict create SourceModuleA {TypeA TypeB valC} SourceModuleB TypeD] types [dict create MySequence [dict create type SEQUENCE components [dict create field1 [dict create type TypeA] field2 [dict create type TypeD]]]] values {} errors_ [list "Unresolved import source module 'SourceModuleA' in module 'MyImportModule'" "Unresolved import source module 'SourceModuleB' in module 'MyImportModule'"]]]
     expr {$parsed eq $expected}
 } -result 1
 
@@ -88,8 +88,9 @@ tcltest::test modules-3.1 {parse_file leaves imports unresolved when source modu
     set parsed [asn1::parse_file $filepath]
     list \
         [dict exists $parsed ImportConsumer imports ImportSourceA] \
-        [dict exists $parsed ImportConsumer types FileTypeA]
-} -result {1 0}
+        [dict exists $parsed ImportConsumer types FileTypeA] \
+        [dict get $parsed ImportConsumer errors_]
+} -result {1 0 {{Unresolved import source module 'ImportSourceA' in module 'ImportConsumer'} {Unresolved import source module 'ImportSourceB' in module 'ImportConsumer'}}}
 
 tcltest::test modules-3.2 {parse_files merges imported types across ASN.1 files} -body {
     set files [list \
@@ -209,5 +210,24 @@ tcltest::test modules-4.3 {Imported nested types keep source module tagging defa
     set value [dict create rsp [dict create notification [dict create events [list [dict create languageSelection [dict create language pl]]]]]]
     binary encode hex [asn1::ber_encode $parsed SocketExplicit SocketResponse $value]
 } -result "300ca10a3008a206a3048d02706c"
+
+set unresolvedSymbolSchema {
+    Source DEFINITIONS ::= BEGIN
+        Present ::= INTEGER
+    END
+
+    Consumer DEFINITIONS ::= BEGIN
+        IMPORTS Present, Missing FROM Source;
+
+        UsesImport ::= SEQUENCE {
+            value Present
+        }
+    END
+}
+
+tcltest::test modules-5.1 {Missing imported symbol is reported in module errors} -body {
+    set parsed [asn1::parse_str $unresolvedSymbolSchema]
+    dict get $parsed Consumer errors_
+} -result {{Unresolved import symbol 'Missing' from module 'Source' in module 'Consumer'}}
 
 tcltest::cleanupTests

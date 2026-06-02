@@ -261,6 +261,8 @@ Demo {
 
 `IMPORTS` declarations are stored under each module's `imports` key. When source modules are present in the same parsed AST, imported value symbols and imported type dependency closures are merged into the importing module. Imported type definitions retain `originModule` metadata so nested references and default tag modes are resolved against the source module.
 
+Unresolved import source modules, missing imported symbols, and missing helper types required by imported definitions are reported in the importing module's `errors_` list.
+
 Use `parse_files` for cross-file imports:
 
 ```tcl

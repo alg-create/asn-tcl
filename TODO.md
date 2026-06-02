@@ -6,41 +6,39 @@ This file tracks ASN.1 features and cleanup work discussed but not yet implement
 
 Requested must-haves from downstream users, mapped to current project status:
 
-### Must Have
+### Active Must Have
 
-- Channel framing helper indefinite-length support.
-  - Current status: definite-length `ber_read_tlv` and `ber_read_sequence` are implemented.
-  - Needed only if downstream sockets can send indefinite-length top-level messages.
-  - Would require nested EOC scanning while reading from the channel.
-- `AUTOMATIC TAGS` semantics.
-  - Current status: parser assigns automatic context-specific component tags for untagged `SEQUENCE`, `SET`, and `CHOICE` components, including synthetic inline types.
-  - Remaining: add SCAPI fixture coverage once real schemas are checked in.
-- Inline anonymous type support.
-  - Current status: component-level inline `SEQUENCE`, `SET`, and `CHOICE` are supported, including generalized inline element types for `SEQUENCE OF` / `SET OF` such as `SET OF CHOICE { ... }` and `SEQUENCE OF SEQUENCE { ... }`.
-  - Remaining: add fixture coverage for more deeply nested SCAPI shapes.
-- Cross-module imported type resolution.
-  - Current status: imported type dependency closures are merged when modules are parsed together; imported types retain `originModule` metadata for nested BER resolution and source-module tagging defaults.
-  - Needs validation with concrete SCAPI fixtures.
-  - Add unresolved-import diagnostics.
-- Symbolic `ENUMERATED` values.
-  - Current status: parser stores named enumerants; BER encode accepts symbolic values such as `cardValidityCheck`.
-  - Needed:
-    - decode optionally returns symbolic values, or returns both symbolic and numeric
-    - policy for extension enumerants
-- More ASN.1 builtin/string types.
-  - Current status: `UTF8String`, `NumericString`, `PrintableString`, `IA5String`, `VisibleString`, and raw-TLV `ANY` BER support are implemented.
-  - Needed soon:
-    - additional SCAPI string families as fixtures require them
-- `DEFAULT` handling.
-  - Current status: parser stores defaults; encode omits default-valued fields; `SEQUENCE` and `SET` decode use tags to skip absent `OPTIONAL`/`DEFAULT` fields and materialize defaults.
-  - Needed:
-    - clear API option for materialized vs omitted defaults if downstream needs it
 - Clean unknown extension handling.
   - Current status: extensible `SEQUENCE` skips unknown trailing fields; `CHOICE` extension handling is limited.
   - Needed:
     - robust extension-addition skipping
     - better behavior for extensible `CHOICE`
     - tests with unknown extension data
+- SCAPI fixture validation.
+  - Current status: downstream-requested parser/BER features have focused regression tests.
+  - Needed:
+    - check concrete SCAPI schemas once available in the test suite
+    - add round-trip fixtures for real request/response payload shapes
+
+### Implemented SCAPI Requests
+
+- Channel framing helper for definite-length top-level BER `SEQUENCE` values.
+- `AUTOMATIC TAGS` context-tag assignment.
+- Inline anonymous `SEQUENCE`, `SET`, `CHOICE`, and inline `SEQUENCE OF` / `SET OF` element types.
+- Cross-module imported type dependency closure merging with `originModule` BER resolution.
+- Unresolved import diagnostics via module `errors_`.
+- Symbolic `ENUMERATED` values during BER encode.
+- BER support for `UTF8String`, `NumericString`, `PrintableString`, `IA5String`, `VisibleString`, and raw-TLV `ANY`.
+- BER `DEFAULT` omission during encode and materialization during `SEQUENCE` / `SET` decode.
+
+### Deferred / Optional SCAPI Items
+
+- Channel framing helper indefinite-length support.
+  - Needed only if downstream sockets can send indefinite-length top-level messages.
+  - Would require nested EOC scanning while reading from the channel.
+- Optional API for whether decoded defaults are materialized.
+- Optional symbolic `ENUMERATED` decode mode, or a decode result containing both symbolic and numeric values.
+- Additional ASN.1 string families as concrete schemas require them.
 
 ### Nice To Have
 
@@ -128,7 +126,7 @@ Requested must-haves from downstream users, mapped to current project status:
 - Decide behavior for modules without `EXPORTS`:
   - ASN.1 default export behavior
   - explicit empty export lists
-- Report unresolved imports explicitly.
+- Add richer unresolved type-reference diagnostics for non-imported local schemas.
 - Consider an optional resolver API for loading imported modules from directories.
 
 ## Testing

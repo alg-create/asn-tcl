@@ -1151,6 +1151,75 @@ proc asn1::merge_imported_type {astVar targetModule sourceModule typeName seenVa
     return $changed
 }
 
+proc asn1::module_add_error {astVar moduleName message} {
+    upvar 1 $astVar ast
+    if {[dict exists $ast $moduleName errors_]} {
+        set errors [dict get $ast $moduleName errors_]
+    } else {
+        set errors {}
+    }
+    if {[lsearch -exact $errors $message] == -1} {
+        lappend errors $message
+        dict set ast $moduleName errors_ $errors
+    }
+}
+
+proc asn1::type_missing_dependencies {ast moduleName typeName seenVar} {
+    upvar 1 $seenVar seen
+    if {[dict exists $seen $typeName]} {
+        return {}
+    }
+    dict set seen $typeName true
+
+    if {![dict exists $ast $moduleName types $typeName]} {
+        return [list $typeName]
+    }
+
+    set missing {}
+    set typeDef [dict get $ast $moduleName types $typeName]
+    foreach refName [asn1::type_reference_names $typeDef] {
+        if {[dict exists $ast $moduleName types $refName]} {
+            foreach depName [asn1::type_missing_dependencies $ast $moduleName $refName seen] {
+                lappend missing $depName
+            }
+        } else {
+            lappend missing $refName
+        }
+    }
+
+    return [lsort -unique $missing]
+}
+
+proc asn1::annotate_unresolved_imports {astVar} {
+    upvar 1 $astVar ast
+    dict for {moduleName moduleAst} $ast {
+        if {![dict exists $moduleAst imports]} {
+            continue
+        }
+
+        dict for {sourceModule symbols} [dict get $moduleAst imports] {
+            if {![dict exists $ast $sourceModule]} {
+                asn1::module_add_error ast $moduleName "Unresolved import source module '$sourceModule' in module '$moduleName'"
+                continue
+            }
+
+            foreach symbol $symbols {
+                if {![dict exists $ast $sourceModule types $symbol] && ![dict exists $ast $sourceModule values $symbol]} {
+                    asn1::module_add_error ast $moduleName "Unresolved import symbol '$symbol' from module '$sourceModule' in module '$moduleName'"
+                    continue
+                }
+
+                if {[dict exists $ast $sourceModule types $symbol]} {
+                    set seen [dict create]
+                    foreach depName [asn1::type_missing_dependencies $ast $sourceModule $symbol seen] {
+                        asn1::module_add_error ast $moduleName "Unresolved type reference '$depName' required by imported type '$symbol' from module '$sourceModule' in module '$moduleName'"
+                    }
+                }
+            }
+        }
+    }
+}
+
 proc asn1::merge_imports {ast} {
     set changed 1
     while {$changed} {
@@ -1176,6 +1245,7 @@ proc asn1::merge_imports {ast} {
             }
         }
     }
+    asn1::annotate_unresolved_imports ast
     return $ast
 }
 
