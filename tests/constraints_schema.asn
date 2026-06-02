@@ -1,0 +1,17 @@
+ConstraintsModule DEFINITIONS ::= BEGIN
+
+    -- Test module for constraints
+
+    Age ::= INTEGER (0..120)
+    
+    Name ::= PrintableString (SIZE(1..50))
+    
+    ExactSize ::= OCTET STRING (SIZE(16))
+    
+    Port ::= INTEGER (1024..65535)
+
+    -- Fixed values or alternate sizes
+    MagicNumber ::= INTEGER (42)
+    IpAddress ::= OCTET STRING (SIZE(4 | 16))
+
+END

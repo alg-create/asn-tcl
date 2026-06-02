@@ -1,4 +1,4 @@
-source asn1_parser.tcl
+source ../asn1_parser.tcl
 
 puts "Parsing test_schema.asn..."
 set result [asn1::parse_file "test_schema.asn"]
