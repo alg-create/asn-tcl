@@ -1,0 +1,101 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+set protocolSpecDir [file join $root deps protocol-specification]
+set protocolSpecFiles [lsort [glob -nocomplain [file join $protocolSpecDir *.asn1]]]
+tcltest::testConstraint protocolSpecAvailable [expr {[llength $protocolSpecFiles] > 0}]
+
+proc parseProtocolSpec {} {
+    global protocolSpecFiles
+    return [asn1::parse_files $protocolSpecFiles]
+}
+
+proc protocolSpecDiagnostics {ast} {
+    set diagnostics {}
+    dict for {module moduleDef} $ast {
+        if {![dict exists $moduleDef errors_]} {
+            continue
+        }
+        foreach err [dict get $moduleDef errors_] {
+            lappend diagnostics [list $module $err]
+        }
+    }
+    return $diagnostics
+}
+
+proc unexpectedProtocolSpecDiagnostics {diagnostics} {
+    set unexpected {}
+    foreach item $diagnostics {
+        lassign $item module message
+        if {$module in {EventLog ScapiNngClient ScapiSocket}
+            && [string match "*ScapiCardholderMessage*" $message]} {
+            continue
+        }
+        lappend unexpected "$module: $message"
+    }
+    return $unexpected
+}
+
+tcltest::test protocol-spec-1.1 {real protocol ASN.1 modules parse as fixture input} -constraints {
+    protocolSpecAvailable
+} -body {
+    set ast [parseProtocolSpec]
+    set requiredModules {EventLog Nexui Scapi ScapiNngClient ScapiSocket}
+    set presentModules [dict keys $ast]
+    set missing {}
+    foreach module $requiredModules {
+        if {$module ni $presentModules} {
+            lappend missing $module
+        }
+    }
+    if {$missing ne {}} {
+        error "Missing protocol modules: $missing"
+    }
+    expr {[llength $presentModules] >= [llength $requiredModules]}
+} -result 1
+
+tcltest::test protocol-spec-1.2 {real protocol ASN.1 diagnostics are expected} -constraints {
+    protocolSpecAvailable
+} -body {
+    set ast [parseProtocolSpec]
+    set unexpected [unexpectedProtocolSpecDiagnostics [protocolSpecDiagnostics $ast]]
+    if {$unexpected ne {}} {
+        error [join $unexpected "\n"]
+    }
+    set result ok
+} -result ok
+
+tcltest::test protocol-spec-2.1 {real Scapi request CHOICE roundtrips} -constraints {
+    protocolSpecAvailable
+} -body {
+    set ast [parseProtocolSpec]
+    set value [dict create authoriseService ""]
+    set encoded [asn1::ber_encode $ast Scapi ScapiRequest $value]
+    list \
+        [binary encode hex $encoded] \
+        [dict get [asn1::ber_decode $ast Scapi ScapiRequest $encoded] value]
+} -result {a4020500 {authoriseService {}}}
+
+tcltest::test protocol-spec-2.2 {real Scapi notification SEQUENCE roundtrips} -constraints {
+    protocolSpecAvailable
+} -body {
+    set ast [parseProtocolSpec]
+    set value [dict create events [list [dict create reboot ""]]]
+    set encoded [asn1::ber_encode $ast Scapi ScapiNotification $value]
+    dict get [asn1::ber_decode $ast Scapi ScapiNotification $encoded] value
+} -result {events {{reboot {}}}}
+
+tcltest::test protocol-spec-2.3 {real Scapi NNG wrapper roundtrips imported CHOICE} -constraints {
+    protocolSpecAvailable
+} -body {
+    set ast [parseProtocolSpec]
+    set value [dict create req [dict create authoriseService ""] id 7]
+    set encoded [asn1::ber_encode $ast ScapiNngClient ScapiNngRequest $value]
+    dict get [asn1::ber_decode $ast ScapiNngClient ScapiNngRequest $encoded] value
+} -result {req {authoriseService {}} id 7}
+
+tcltest::cleanupTests

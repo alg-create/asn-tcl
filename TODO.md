@@ -9,10 +9,10 @@ Requested must-haves from downstream users, mapped to current project status:
 ### Active Must Have
 
 - SCAPI fixture validation.
-  - Current status: downstream-requested parser/BER features have focused regression tests.
+  - Current status: downstream-requested parser/BER features have focused regression tests; `deps/protocol-specification` ASN.1 modules are compiled by the test suite when present.
   - Needed:
-    - check concrete SCAPI schemas once available in the test suite
     - add round-trip fixtures for real request/response payload shapes
+    - remove the expected diagnostic allowance once upstream fixes `ScapiCardholderMessage` / `ScapiCardholderMesage`
 
 ### Implemented SCAPI Requests
 
@@ -24,6 +24,10 @@ Requested must-haves from downstream users, mapped to current project status:
 - Symbolic `ENUMERATED` values during BER encode.
 - BER support for `UTF8String`, `NumericString`, `PrintableString`, `IA5String`, `VisibleString`, and raw-TLV `ANY`.
 - BER `DEFAULT` omission during encode and materialization during `SEQUENCE` / `SET` decode.
+- Real `deps/protocol-specification` ASN.1 module fixture validation:
+  - parses current EventLog, Nexui, Scapi, ScapiNngClient, and ScapiSocket modules when the checkout is present
+  - allows only the current upstream `ScapiCardholderMessage` / `ScapiCardholderMesage` mismatch diagnostic
+  - includes representative BER round-trips for Scapi request, notification, and NNG wrapper values
 - Clean unknown extension handling:
   - extensible `SEQUENCE` and `SET` skip unknown extension TLVs with bounded BER validation
   - known extension additions participate in BER encode/decode

@@ -20,6 +20,10 @@ tclsh tests\modules.test
 The full suite also loads `tclmut` from `deps\muttcl\lib` and parses the
 project Tcl sources/tests via `tests\muttcl_integration.test`.
 
+When `deps\protocol-specification` is present, the full suite compiles those
+real ASN.1 modules and runs representative BER smoke round-trips via
+`tests\protocol_specification.test`.
+
 ## Python BER Oracle
 
 For cross-checking BER behavior, this workspace can use Python `asn1tools` as an external oracle.
