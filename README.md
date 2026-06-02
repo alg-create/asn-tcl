@@ -259,7 +259,7 @@ Demo {
 
 ## Imports
 
-`IMPORTS` declarations are stored under each module's `imports` key. When source modules are present in the same parsed AST, imported type and value symbols are merged into the importing module.
+`IMPORTS` declarations are stored under each module's `imports` key. When source modules are present in the same parsed AST, imported value symbols and imported type dependency closures are merged into the importing module. Imported type definitions retain `originModule` metadata so nested references and default tag modes are resolved against the source module.
 
 Use `parse_files` for cross-file imports:
 

@@ -64,7 +64,7 @@ tcltest::test modules-2.1 {Imported type symbols are merged into importing modul
         [dict get $parsed MyImportModule types TypeA] \
         [dict get $parsed MyImportModule types TypeB] \
         [dict get $parsed MyImportModule types TypeD]
-} -result {{type INTEGER} {type {OCTET STRING}} {type BOOLEAN}}
+} -result {{type INTEGER originModule SourceModuleA} {type {OCTET STRING} originModule SourceModuleA} {type BOOLEAN originModule SourceModuleB}}
 
 tcltest::test modules-2.2 {Imported value symbols are merged into importing module AST} -body {
     set parsed [asn1::parse_str $importSchema]
@@ -101,7 +101,7 @@ tcltest::test modules-3.2 {parse_files merges imported types across ASN.1 files}
         [dict get $parsed ImportConsumer types FileTypeA] \
         [dict get $parsed ImportConsumer types FileTypeB] \
         [dict get $parsed ImportConsumer types FileTypeD]
-} -result {{type INTEGER} {type {OCTET STRING}} {type BOOLEAN}}
+} -result {{type INTEGER originModule ImportSourceA} {type {OCTET STRING} originModule ImportSourceA} {type BOOLEAN originModule ImportSourceB}}
 
 tcltest::test modules-3.3 {parse_files merges imported values across ASN.1 files} -body {
     set files [list \
@@ -130,5 +130,84 @@ tcltest::test modules-3.5 {BER decode resolves imported types loaded from ASN.1 
     set bytes [binary decode hex "300b020108010100040378797a"]
     dict get [asn1::ber_decode $parsed ImportConsumer FileSequence $bytes] value
 } -result {field1 8 field2 0 field3 xyz}
+
+set nestedImportSchema {
+    Source DEFINITIONS EXPLICIT TAGS ::= BEGIN
+        EventSequence ::= SEQUENCE OF Event
+
+        Event ::= CHOICE {
+            languageSelection [3] LanguageSelection
+        }
+
+        LanguageSelection ::= SEQUENCE {
+            language [13] UTF8String
+        }
+
+        Notification ::= SEQUENCE {
+            events [2] EventSequence
+        }
+    END
+
+    Socket DEFINITIONS EXPLICIT TAGS ::= BEGIN
+        IMPORTS Notification FROM Source;
+
+        SocketResponse ::= SEQUENCE {
+            rsp CHOICE {
+                notification [1] Notification
+            }
+        }
+    END
+}
+
+tcltest::test modules-4.1 {Imported type dependency closure is merged} -body {
+    set parsed [asn1::parse_str $nestedImportSchema]
+    list \
+        [dict exists $parsed Socket types Notification] \
+        [dict exists $parsed Socket types EventSequence] \
+        [dict exists $parsed Socket types Event] \
+        [dict exists $parsed Socket types LanguageSelection]
+} -result {1 1 1 1}
+
+tcltest::test modules-4.2 {BER encode resolves nested helper types from imported SEQUENCE} -body {
+    set parsed [asn1::parse_str $nestedImportSchema]
+    set value [dict create rsp [dict create notification [dict create events [list [dict create languageSelection [dict create language pl]]]]]]
+    set encoded [asn1::ber_encode $parsed Socket SocketResponse $value]
+    set decoded [dict get [asn1::ber_decode $parsed Socket SocketResponse $encoded] value]
+    dict get $decoded rsp notification events
+} -result {{languageSelection {language pl}}}
+
+set nestedImportTaggingSchema {
+    SourceImplicit DEFINITIONS IMPLICIT TAGS ::= BEGIN
+        EventSequence ::= SEQUENCE OF Event
+
+        Event ::= CHOICE {
+            languageSelection [3] LanguageSelection
+        }
+
+        LanguageSelection ::= SEQUENCE {
+            language [13] UTF8String
+        }
+
+        Notification ::= SEQUENCE {
+            events [2] EventSequence
+        }
+    END
+
+    SocketExplicit DEFINITIONS EXPLICIT TAGS ::= BEGIN
+        IMPORTS Notification FROM SourceImplicit;
+
+        SocketResponse ::= SEQUENCE {
+            rsp CHOICE {
+                notification [1] Notification
+            }
+        }
+    END
+}
+
+tcltest::test modules-4.3 {Imported nested types keep source module tagging defaults} -body {
+    set parsed [asn1::parse_str $nestedImportTaggingSchema]
+    set value [dict create rsp [dict create notification [dict create events [list [dict create languageSelection [dict create language pl]]]]]]
+    binary encode hex [asn1::ber_encode $parsed SocketExplicit SocketResponse $value]
+} -result "300ca10a3008a206a3048d02706c"
 
 tcltest::cleanupTests

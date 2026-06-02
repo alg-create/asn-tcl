@@ -19,8 +19,8 @@ Requested must-haves from downstream users, mapped to current project status:
   - Current status: component-level inline `SEQUENCE`, `SET`, and `CHOICE` are supported, including generalized inline element types for `SEQUENCE OF` / `SET OF` such as `SET OF CHOICE { ... }` and `SEQUENCE OF SEQUENCE { ... }`.
   - Remaining: add fixture coverage for more deeply nested SCAPI shapes.
 - Cross-module imported type resolution.
-  - Current status: imported symbols are merged when modules are parsed together.
-  - Needs validation for nested/transitive imported type references in SCAPI fixtures.
+  - Current status: imported type dependency closures are merged when modules are parsed together; imported types retain `originModule` metadata for nested BER resolution and source-module tagging defaults.
+  - Needs validation with concrete SCAPI fixtures.
   - Add unresolved-import diagnostics.
 - Symbolic `ENUMERATED` values.
   - Current status: parser stores named enumerants; BER encode accepts symbolic values such as `cardValidityCheck`.

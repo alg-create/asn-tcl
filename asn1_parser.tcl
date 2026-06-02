@@ -1065,6 +1065,92 @@ proc asn1::validate_ast {ast} {
     return $ast
 }
 
+proc asn1::type_reference_names {typeDef} {
+    set refs {}
+    if {![dict exists $typeDef type]} {
+        return $refs
+    }
+
+    set typeName [dict get $typeDef type]
+    if {$typeName ni [asn1::ber_builtin_types]} {
+        lappend refs $typeName
+    }
+
+    if {$typeName in {"SEQUENCE" "SET" "CHOICE"}} {
+        foreach componentKey {components extensionAdditions} {
+            if {![dict exists $typeDef $componentKey]} {
+                continue
+            }
+            dict for {_ componentDef} [dict get $typeDef $componentKey] {
+                foreach ref [asn1::type_reference_names $componentDef] {
+                    lappend refs $ref
+                }
+            }
+        }
+    }
+
+    if {$typeName in {"SEQUENCE OF" "SET OF"} && [dict exists $typeDef elementType]} {
+        set elemType [dict get $typeDef elementType]
+        if {$elemType ni [asn1::ber_builtin_types]} {
+            lappend refs $elemType
+        }
+    }
+
+    return [lsort -unique $refs]
+}
+
+proc asn1::mark_origin_module {typeDef originModule} {
+    if {![dict exists $typeDef originModule]} {
+        dict set typeDef originModule $originModule
+    }
+
+    foreach componentKey {components extensionAdditions} {
+        if {![dict exists $typeDef $componentKey]} {
+            continue
+        }
+        dict for {fieldName fieldDef} [dict get $typeDef $componentKey] {
+            dict set typeDef $componentKey $fieldName [asn1::mark_origin_module $fieldDef $originModule]
+        }
+    }
+
+    return $typeDef
+}
+
+proc asn1::merge_imported_type {astVar targetModule sourceModule typeName seenVar} {
+    upvar 1 $astVar ast
+    upvar 1 $seenVar seen
+
+    set seenKey "$targetModule\x1f$sourceModule\x1f$typeName"
+    if {[dict exists $seen $seenKey]} {
+        return 0
+    }
+    dict set seen $seenKey true
+
+    if {![dict exists $ast $sourceModule types $typeName]} {
+        return 0
+    }
+
+    set changed 0
+    set sourceTypeDef [dict get $ast $sourceModule types $typeName]
+    if {![dict exists $ast $targetModule types $typeName]} {
+        dict set ast $targetModule types $typeName [asn1::mark_origin_module $sourceTypeDef $sourceModule]
+        set changed 1
+    }
+
+    foreach refName [asn1::type_reference_names $sourceTypeDef] {
+        if {$refName eq $typeName} {
+            continue
+        }
+        if {[dict exists $ast $sourceModule types $refName]} {
+            if {[asn1::merge_imported_type ast $targetModule $sourceModule $refName seen]} {
+                set changed 1
+            }
+        }
+    }
+
+    return $changed
+}
+
 proc asn1::merge_imports {ast} {
     set changed 1
     while {$changed} {
@@ -1078,8 +1164,8 @@ proc asn1::merge_imports {ast} {
                     continue
                 }
                 foreach symbol $symbols {
-                    if {[dict exists $ast $sourceModule types $symbol] && ![dict exists $ast $moduleName types $symbol]} {
-                        dict set ast $moduleName types $symbol [dict get $ast $sourceModule types $symbol]
+                    set seen [dict create]
+                    if {[asn1::merge_imported_type ast $moduleName $sourceModule $symbol seen]} {
                         set changed 1
                     }
                     if {[dict exists $ast $sourceModule values $symbol] && ![dict exists $ast $moduleName values $symbol]} {
@@ -1496,12 +1582,32 @@ proc asn1::convert_value_literal {baseType rawVal} {
 }
 
 proc asn1::ber_resolve_base_type {ast moduleName typeDef} {
+    set moduleName [asn1::ber_effective_module $moduleName $typeDef]
     set baseType [dict get $typeDef type]
-    while {$baseType ni [asn1::ber_builtin_types] && [dict exists $ast $moduleName types $baseType]} {
-        set typeDef [dict get $ast $moduleName types $baseType]
+    while {$baseType ni [asn1::ber_builtin_types] && [asn1::ber_type_exists $ast $moduleName $baseType]} {
+        set typeDef [asn1::ber_lookup_type_def $ast $moduleName $baseType]
+        set moduleName [asn1::ber_effective_module $moduleName $typeDef]
         set baseType [dict get $typeDef type]
     }
     return $baseType
+}
+
+proc asn1::ber_effective_module {moduleName typeDef} {
+    if {[dict exists $typeDef originModule]} {
+        return [dict get $typeDef originModule]
+    }
+    return $moduleName
+}
+
+proc asn1::ber_type_exists {ast moduleName typeName} {
+    return [dict exists $ast $moduleName types $typeName]
+}
+
+proc asn1::ber_lookup_type_def {ast moduleName typeName} {
+    if {[dict exists $ast $moduleName types $typeName]} {
+        return [dict get $ast $moduleName types $typeName]
+    }
+    error "Type '$typeName' not found in module '$moduleName'"
 }
 
 proc asn1::enumerated_value_to_integer {typeDef value} {
@@ -1657,6 +1763,7 @@ proc asn1::ber_check_constraints {typeDef baseType value {encodingPhase 0}} {
 }
 
 proc asn1::ber_encode_type {ast moduleName typeDef value} {
+    set moduleName [asn1::ber_effective_module $moduleName $typeDef]
     set baseType [dict get $typeDef type]
 
     set hasTag [dict exists $typeDef tag]
@@ -1702,7 +1809,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
     }
 
     if {$baseType ni [asn1::ber_builtin_types]} {
-        set aliasDef [dict get $ast $moduleName types $baseType]
+        set aliasDef [asn1::ber_lookup_type_def $ast $moduleName $baseType]
         return [asn1::ber_encode_type $ast $moduleName $aliasDef $value]
     }
 
@@ -1874,6 +1981,7 @@ proc asn1::ber_decode_oid {bytes} {
 }
 
 proc asn1::get_expected_tag {ast moduleName typeDef} {
+    set moduleName [asn1::ber_effective_module $moduleName $typeDef]
     if {[dict exists $typeDef tag]} {
         set tagDict [dict get $typeDef tag]
         if {[dict exists $tagDict mode]} {
@@ -1914,7 +2022,7 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
 
     set baseType [dict get $typeDef type]
     if {$baseType ni [asn1::ber_builtin_types]} {
-        set aliasDef [dict get $ast $moduleName types $baseType]
+        set aliasDef [asn1::ber_lookup_type_def $ast $moduleName $baseType]
         return [asn1::get_expected_tag $ast $moduleName $aliasDef]
     }
 
@@ -2052,6 +2160,7 @@ proc asn1::extract_ber_value {bytes idxVar len} {
 
 proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     upvar 1 $idxVar idx
+    set moduleName [asn1::ber_effective_module $moduleName $typeDef]
 
     if {[dict exists $typeDef tag]} {
         set tagDict [dict get $typeDef tag]
@@ -2097,7 +2206,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
 
     set baseType [dict get $typeDef type]
     if {$baseType ni [asn1::ber_builtin_types]} {
-        set aliasDef [dict get $ast $moduleName types $baseType]
+        set aliasDef [asn1::ber_lookup_type_def $ast $moduleName $baseType]
         return [asn1::ber_decode_type $ast $moduleName $aliasDef $bytes idx]
     }
 
