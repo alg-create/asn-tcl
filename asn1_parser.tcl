@@ -152,8 +152,35 @@ namespace eval asn1 {
                 }
                 
                 if {$searchIdx + 1 < $len && [lindex $tokens $searchIdx] eq "::=" && [lindex $tokens [expr {$searchIdx+1}]] eq "BEGIN"} {
-                    set moduleAst [dict create tagging $tagging types [dict create] values [dict create]]
+                    set moduleAst [dict create tagging $tagging imports [dict create] types [dict create] values [dict create]]
                     set i [expr {$searchIdx + 2}]
+                    
+                    # Parse IMPORTS block if present
+                    if {$i < $len && [lindex $tokens $i] eq "IMPORTS"} {
+                        incr i ;# skip "IMPORTS"
+                        set importsDict [dict create]
+                        while {$i < $len && [lindex $tokens $i] ne ";"} {
+                            # Read list of symbols until FROM
+                            set symbols {}
+                            while {$i < $len && [lindex $tokens $i] ne "FROM" && [lindex $tokens $i] ne ";"} {
+                                set sym [lindex $tokens $i]
+                                if {$sym ne ","} {
+                                    lappend symbols $sym
+                                }
+                                incr i
+                            }
+                            if {$i < $len && [lindex $tokens $i] eq "FROM"} {
+                                incr i ;# skip "FROM"
+                                set fromModule [lindex $tokens $i]
+                                incr i ;# skip module name
+                                dict set importsDict $fromModule $symbols
+                            }
+                        }
+                        if {$i < $len && [lindex $tokens $i] eq ";"} {
+                            incr i ;# skip ";"
+                        }
+                        dict set moduleAst imports $importsDict
+                    }
                     
                     # Parse body of module
                     while {$i < $len && [lindex $tokens $i] ne "END"} {

@@ -1,0 +1,12 @@
+MyImportModule DEFINITIONS ::= BEGIN
+
+    IMPORTS
+        TypeA, TypeB, valC FROM SourceModuleA
+        TypeD FROM SourceModuleB;
+
+    MySequence ::= SEQUENCE {
+        field1 TypeA,
+        field2 TypeD
+    }
+
+END

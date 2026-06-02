@@ -109,6 +109,34 @@ MyTestModule {
 
 ---
 
+### Imports Representation (`IMPORTS`)
+
+The parser supports parsing `IMPORTS` statements at the beginning of each module definition. The imported symbols are grouped by their source module and stored in the `imports` field at the root of the parsed module AST (defaulting to an empty dictionary `{}` if not specified).
+
+#### Example Import Schema
+```asn
+MyImportModule DEFINITIONS ::= BEGIN
+    IMPORTS
+        TypeA, TypeB, valC FROM SourceModuleA
+        TypeD FROM SourceModuleB;
+END
+```
+
+#### Parsed AST Representation
+```tcl
+MyImportModule {
+    tagging EXPLICIT
+    imports {
+        SourceModuleA {TypeA TypeB valC}
+        SourceModuleB TypeD
+    }
+    types {}
+    values {}
+}
+```
+
+---
+
 ### Tagging Representation (IMPLICIT / EXPLICIT)
 
 The parser supports tagging overrides at three levels:
@@ -189,5 +217,11 @@ tclsh run_all.tcl
 Running: asn1_parser_test.tcl
 [PASS] asn1_parser_test.tcl
 ----------------------------------------
-Summary: 1 tests run, 1 passed, 0 failed.
+Running: imports_test.tcl
+[PASS] imports_test.tcl
+----------------------------------------
+Running: tagging_test.tcl
+[PASS] tagging_test.tcl
+----------------------------------------
+Summary: 3 tests run, 3 passed, 0 failed.
 ```
