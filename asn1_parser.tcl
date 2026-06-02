@@ -1005,13 +1005,28 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             binary scan [string index $valBytes 0] c b
             return [expr {($b & 0xFF) != 0}]
         }
-        "OCTET STRING" { return $valBytes }
+        "OCTET STRING" {
+            # Handle constructed OCTET STRING (tag has constructed bit set)
+            if {$tagCons == 32} {
+                set result ""
+                set subIdx 0
+                while {$subIdx < [string length $valBytes]} {
+                    asn1::ber_decode_tag $valBytes subIdx _ _ _
+                    set chunkLen [asn1::ber_decode_length $valBytes subIdx]
+                    set chunk [asn1::extract_ber_value $valBytes subIdx $chunkLen]
+                    append result $chunk
+                }
+                return $result
+            }
+            return $valBytes
+        }
         "SEQUENCE" - "SET" {
             set result [dict create]
             set subIdx 0
             set comps [dict get $typeDef components]
+            set valLen [string length $valBytes]
             dict for {fieldName fieldDef} $comps {
-                if {$subIdx >= $len} {
+                if {$subIdx >= $valLen} {
                     if {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} { continue }
                     if {[dict exists $fieldDef default]} {
                         dict set result $fieldName [dict get $fieldDef default]

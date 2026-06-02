@@ -39,14 +39,15 @@ tcltest::test corner-tag-1.2 {Decode high tag primitive} -body {
 # Tag 1000: Private (0xC0), Constructed (0x20) -> 0xE0. First byte: 0xE0 | 0x1F = 0xFF.
 # 1000 is 11 1110 1000 in binary. Base 128: 0000111 (7) and 1101000 (104, 0x68). 
 # Bytes: 0xFF, 0x87, 0x68.
-# Sequence contains INTEGER(42) -> 02 01 2a. Inner length is 3. Total length is 3.
+# EXPLICIT wraps the entire inner encoding: SEQUENCE{val=42} -> 30 03 02 01 2a (5 bytes)
+# So: FF 87 68 05 30 03 02 01 2a
 tcltest::test corner-tag-2.1 {Encode high tag constructed} -body {
     set val [dict create val 42]
     binary encode hex [asn1::ber_encode $ast CornerCases HighTagSeq $val]
-} -result "ff87680302012a"
+} -result "ff876805300302012a"
 
 tcltest::test corner-tag-2.2 {Decode high tag constructed} -body {
-    set bytes [binary decode hex "ff87680302012a"]
+    set bytes [binary decode hex "ff876805300302012a"]
     dict get [asn1::ber_decode $ast CornerCases HighTagSeq $bytes] value
 } -result {val 42}
 
