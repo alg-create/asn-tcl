@@ -1,0 +1,24 @@
+MyTaggedModule DEFINITIONS IMPLICIT TAGS ::= BEGIN
+
+    -- Type definitions with tags (Global level)
+    GlobalTaggedType ::= [APPLICATION 2] IMPLICIT INTEGER
+    
+    ExplicitTaggedType ::= [UNIVERSAL 10] EXPLICIT BOOLEAN
+    
+    DefaultTaggedType ::= [PRIVATE 5] OCTET STRING
+
+    -- SEQUENCE with standard and tagged members
+    TaggedSequence ::= SEQUENCE {
+        standardMember BOOLEAN,
+        customMember   [PRIVATE 14] IMPLICIT MyIdentifier
+    }
+
+    -- CHOICE with tagged members
+    TaggedChoice ::= CHOICE {
+        choiceA [1] IMPLICIT INTEGER,
+        choiceB [2] EXPLICIT MyIdentifier
+    }
+
+    MyIdentifier ::= INTEGER
+
+END

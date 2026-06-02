@@ -109,6 +109,66 @@ MyTestModule {
 
 ---
 
+### Tagging Representation (IMPLICIT / EXPLICIT)
+
+The parser supports tagging overrides at three levels:
+1. **Module Level**: Default tagging (`EXPLICIT TAGS`, `IMPLICIT TAGS`, or `AUTOMATIC TAGS`) is stored in the `tagging` field at the root of each module (defaulting to `EXPLICIT` if not specified).
+2. **Type Level**: Individual type definitions can have tag descriptors (e.g. `GlobalTaggedType ::= [APPLICATION 2] IMPLICIT INTEGER`).
+3. **Component Level**: Members inside `SEQUENCE` or `CHOICE` definitions can have tag descriptors (e.g. `customMember [PRIVATE 14] IMPLICIT MyIdentifier`).
+
+When a tag is present on a type or component definition, a `tag` dictionary is added containing:
+- `class`: `UNIVERSAL`, `APPLICATION`, `PRIVATE`, or `CONTEXT-SPECIFIC` (the default if omitted).
+- `number`: The tag integer value.
+- `mode`: `IMPLICIT` or `EXPLICIT` (only included if explicitly declared in the schema).
+
+#### Example Tagged Schema
+```asn
+MyTaggedModule DEFINITIONS IMPLICIT TAGS ::= BEGIN
+    GlobalTaggedType ::= [APPLICATION 2] IMPLICIT INTEGER
+    
+    TaggedSequence ::= SEQUENCE {
+        standardMember BOOLEAN,
+        customMember   [PRIVATE 14] IMPLICIT MyIdentifier
+    }
+END
+```
+
+#### Parsed AST Representation
+```tcl
+MyTaggedModule {
+    tagging IMPLICIT
+    types {
+        GlobalTaggedType {
+            type INTEGER
+            tag {
+                class APPLICATION
+                number 2
+                mode IMPLICIT
+            }
+        }
+        TaggedSequence {
+            type SEQUENCE
+            components {
+                standardMember {
+                    type BOOLEAN
+                }
+                customMember {
+                    type MyIdentifier
+                    tag {
+                        class PRIVATE
+                        number 14
+                        mode IMPLICIT
+                    }
+                }
+            }
+        }
+    }
+    values {}
+}
+```
+
+---
+
 ## Testing
 
 The project includes a comprehensive test suite. You can run individual tests or run the full test suite using the included test harness.
