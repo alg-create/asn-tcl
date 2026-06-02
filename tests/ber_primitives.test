@@ -11,6 +11,8 @@ set schema {
         Bits ::= BIT STRING
         ThreeBits ::= BIT STRING (SIZE(3))
         Text ::= UTF8String
+        Mailbox ::= IA5String
+        Display ::= VisibleString
 
         Record ::= SEQUENCE {
             nothing NULL,
@@ -65,6 +67,32 @@ tcltest::test ber-prim-utf8-1.2 {Decode UTF8String} -body {
     set bytes [binary decode hex "0c0568656c6c6f"]
     dict get [asn1::ber_decode $ast PrimitiveModule Text $bytes] value
 } -result "hello"
+
+tcltest::test ber-prim-ia5-1.1 {Encode IA5String} -body {
+    binary encode hex [asn1::ber_encode $ast PrimitiveModule Mailbox "ops@example.com"]
+} -result "160f6f7073406578616d706c652e636f6d"
+
+tcltest::test ber-prim-ia5-1.2 {Decode IA5String} -body {
+    set bytes [binary decode hex "160f6f7073406578616d706c652e636f6d"]
+    dict get [asn1::ber_decode $ast PrimitiveModule Mailbox $bytes] value
+} -result "ops@example.com"
+
+tcltest::test ber-prim-ia5-1.3 {Encode IA5String rejects non-ASCII} -body {
+    asn1::ber_encode $ast PrimitiveModule Mailbox "zażółć"
+} -returnCodes error -match glob -result {*IA5String value contains invalid characters*}
+
+tcltest::test ber-prim-visible-1.1 {Encode VisibleString} -body {
+    binary encode hex [asn1::ber_encode $ast PrimitiveModule Display "Label-1"]
+} -result "1a074c6162656c2d31"
+
+tcltest::test ber-prim-visible-1.2 {Decode VisibleString} -body {
+    set bytes [binary decode hex "1a074c6162656c2d31"]
+    dict get [asn1::ber_decode $ast PrimitiveModule Display $bytes] value
+} -result "Label-1"
+
+tcltest::test ber-prim-visible-1.3 {Encode VisibleString rejects control characters} -body {
+    asn1::ber_encode $ast PrimitiveModule Display "line\nbreak"
+} -returnCodes error -match glob -result {*VisibleString value contains invalid characters*}
 
 tcltest::test ber-prim-sequence-1.1 {Encode SEQUENCE with NULL BIT STRING UTF8String} -body {
     set bitBytes [binary decode hex a0]

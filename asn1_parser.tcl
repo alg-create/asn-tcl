@@ -1419,7 +1419,7 @@ proc asn1::ber_encode_integer {val} {
 }
 
 proc asn1::ber_builtin_types {} {
-    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "BIT STRING" "NULL" "OBJECT IDENTIFIER" "UTF8String" "NumericString" "PrintableString" "ANY" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
+    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "BIT STRING" "NULL" "OBJECT IDENTIFIER" "UTF8String" "NumericString" "PrintableString" "IA5String" "VisibleString" "ANY" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
 }
 
 proc asn1::ber_encode_oid_subidentifier {val} {
@@ -1635,6 +1635,22 @@ proc asn1::enumerated_value_to_integer {typeDef value} {
 }
 
 proc asn1::ber_validate_character_string {baseType value} {
+    foreach ch [split $value ""] {
+        scan $ch %c code
+        switch $baseType {
+            "IA5String" {
+                if {$code < 0 || $code > 127} {
+                    error "IA5String value contains invalid characters"
+                }
+            }
+            "VisibleString" {
+                if {$code < 32 || $code > 126} {
+                    error "VisibleString value contains invalid characters"
+                }
+            }
+        }
+    }
+
     switch $baseType {
         "NumericString" {
             if {![regexp {^[0-9 ]*$} $value]} {
@@ -1725,7 +1741,7 @@ proc asn1::ber_size_for_constraint {baseType value {encodingPhase 0}} {
         "BIT STRING" {
             return [lindex $value 1]
         }
-        "UTF8String" - "NumericString" - "PrintableString" {
+        "UTF8String" - "NumericString" - "PrintableString" - "IA5String" - "VisibleString" {
             return [string length $value]
         }
         "SEQUENCE OF" - "SET OF" - "OBJECT IDENTIFIER" {
@@ -1863,6 +1879,16 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         }
         "PrintableString" {
             set tagNum 19
+            asn1::ber_validate_character_string $baseType $value
+            set valBytes [encoding convertto utf-8 $value]
+        }
+        "IA5String" {
+            set tagNum 22
+            asn1::ber_validate_character_string $baseType $value
+            set valBytes [encoding convertto utf-8 $value]
+        }
+        "VisibleString" {
+            set tagNum 26
             asn1::ber_validate_character_string $baseType $value
             set valBytes [encoding convertto utf-8 $value]
         }
@@ -2037,6 +2063,8 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         "UTF8String" { return [list [list 0 0 12] [list 0 32 12]] }
         "NumericString" { return [list [list 0 0 18] [list 0 32 18]] }
         "PrintableString" { return [list [list 0 0 19] [list 0 32 19]] }
+        "IA5String" { return [list [list 0 0 22] [list 0 32 22]] }
+        "VisibleString" { return [list [list 0 0 26] [list 0 32 26]] }
         "ANY" { return {} }
         "SEQUENCE" { return [list [list 0 32 16]] }
         "SET" { return [list [list 0 32 17]] }
@@ -2271,7 +2299,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         "UTF8String" {
             set decodedValue [encoding convertfrom utf-8 [asn1::ber_decode_string_value $valBytes $tagCons]]
         }
-        "NumericString" - "PrintableString" {
+        "NumericString" - "PrintableString" - "IA5String" - "VisibleString" {
             set decodedValue [encoding convertfrom utf-8 [asn1::ber_decode_string_value $valBytes $tagCons]]
             asn1::ber_validate_character_string $baseType $decodedValue
         }

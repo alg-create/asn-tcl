@@ -28,10 +28,8 @@ Requested must-haves from downstream users, mapped to current project status:
     - decode optionally returns symbolic values, or returns both symbolic and numeric
     - policy for extension enumerants
 - More ASN.1 builtin/string types.
-  - Current status: `UTF8String`, `PrintableString`, `NumericString`, and raw-TLV `ANY` BER support are implemented.
+  - Current status: `UTF8String`, `NumericString`, `PrintableString`, `IA5String`, `VisibleString`, and raw-TLV `ANY` BER support are implemented.
   - Needed soon:
-    - `IA5String`
-    - `VisibleString`
     - additional SCAPI string families as fixtures require them
 - `DEFAULT` handling.
   - Current status: parser stores defaults; encode omits default-valued fields; `SEQUENCE` and `SET` decode use tags to skip absent `OPTIONAL`/`DEFAULT` fields and materialize defaults.
@@ -102,12 +100,8 @@ Requested must-haves from downstream users, mapped to current project status:
 ## BER Encoder/Decoder
 
 - Add proper BER tags and validation for ASN.1 string families:
-  - `PrintableString`
-  - `IA5String`
-  - `VisibleString`
   - `BMPString`
   - `UniversalString`
-  - `NumericString`
   - other useful character string types
 - Add higher-level named-bit value helpers for `BIT STRING`.
 - Add BER support for `REAL`.

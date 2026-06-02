@@ -12,7 +12,7 @@ Supported parser features include:
 - `EXPORTS` and `IMPORTS`
 - Single-file parsing and multi-file parsing with import merging
 - Type assignments and simple value assignments
-- `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `OBJECT IDENTIFIER`, `NULL`, `UTF8String`, `PrintableString`, `NumericString`, and `ANY`
+- `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `OBJECT IDENTIFIER`, `NULL`, `UTF8String`, `NumericString`, `PrintableString`, `IA5String`, `VisibleString`, and `ANY`
 - `SEQUENCE`, `SET`, `CHOICE`
 - `SEQUENCE OF` and `SET OF`
 - Inline nested `SEQUENCE`, `SET`, and `CHOICE`, including inline element types for `SEQUENCE OF` / `SET OF`
@@ -25,7 +25,7 @@ Supported parser features include:
 
 Supported BER features include:
 
-- Encode/decode for `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `NULL`, `OBJECT IDENTIFIER`, `UTF8String`, `PrintableString`, `NumericString`, and raw-TLV `ANY`
+- Encode/decode for `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `NULL`, `OBJECT IDENTIFIER`, `UTF8String`, `NumericString`, `PrintableString`, `IA5String`, `VisibleString`, and raw-TLV `ANY`
 - Encode/decode for `SEQUENCE`, `SET`, `CHOICE`, `SEQUENCE OF`, `SET OF`
 - Symbolic `ENUMERATED` values during encoding
 - Automatic context tags for modules declared with `AUTOMATIC TAGS`
