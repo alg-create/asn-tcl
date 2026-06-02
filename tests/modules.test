@@ -83,4 +83,52 @@ tcltest::test modules-2.4 {BER decode resolves merged imported types} -body {
     dict get [asn1::ber_decode $parsed MyImportModule MySequence $bytes] value
 } -result {field1 5 field2 1 field3 abc}
 
+tcltest::test modules-3.1 {parse_file leaves imports unresolved when source modules are not loaded} -body {
+    set filepath [file join $testdir modules 07-import-consumer.asn]
+    set parsed [asn1::parse_file $filepath]
+    list \
+        [dict exists $parsed ImportConsumer imports ImportSourceA] \
+        [dict exists $parsed ImportConsumer types FileTypeA]
+} -result {1 0}
+
+tcltest::test modules-3.2 {parse_files merges imported types across ASN.1 files} -body {
+    set files [list \
+        [file join $testdir modules 05-import-source-a.asn] \
+        [file join $testdir modules 06-import-source-b.asn] \
+        [file join $testdir modules 07-import-consumer.asn]]
+    set parsed [asn1::parse_files $files]
+    list \
+        [dict get $parsed ImportConsumer types FileTypeA] \
+        [dict get $parsed ImportConsumer types FileTypeB] \
+        [dict get $parsed ImportConsumer types FileTypeD]
+} -result {{type INTEGER} {type {OCTET STRING}} {type BOOLEAN}}
+
+tcltest::test modules-3.3 {parse_files merges imported values across ASN.1 files} -body {
+    set files [list \
+        [file join $testdir modules 05-import-source-a.asn] \
+        [file join $testdir modules 07-import-consumer.asn]]
+    set parsed [asn1::parse_files $files]
+    dict get $parsed ImportConsumer values fileVal
+} -result {type INTEGER value 9}
+
+tcltest::test modules-3.4 {BER encode resolves imported types loaded from ASN.1 files} -body {
+    set files [list \
+        [file join $testdir modules 05-import-source-a.asn] \
+        [file join $testdir modules 06-import-source-b.asn] \
+        [file join $testdir modules 07-import-consumer.asn]]
+    set parsed [asn1::parse_files $files]
+    set value [dict create field1 8 field2 0 field3 xyz]
+    binary encode hex [asn1::ber_encode $parsed ImportConsumer FileSequence $value]
+} -result "300b020108010100040378797a"
+
+tcltest::test modules-3.5 {BER decode resolves imported types loaded from ASN.1 files} -body {
+    set files [list \
+        [file join $testdir modules 05-import-source-a.asn] \
+        [file join $testdir modules 06-import-source-b.asn] \
+        [file join $testdir modules 07-import-consumer.asn]]
+    set parsed [asn1::parse_files $files]
+    set bytes [binary decode hex "300b020108010100040378797a"]
+    dict get [asn1::ber_decode $parsed ImportConsumer FileSequence $bytes] value
+} -result {field1 8 field2 0 field3 xyz}
+
 tcltest::cleanupTests

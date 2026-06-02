@@ -1,0 +1,5 @@
+ImportSourceA DEFINITIONS ::= BEGIN
+    FileTypeA ::= INTEGER
+    FileTypeB ::= OCTET STRING
+    fileVal INTEGER ::= 9
+END

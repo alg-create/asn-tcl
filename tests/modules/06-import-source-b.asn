@@ -1,0 +1,3 @@
+ImportSourceB DEFINITIONS ::= BEGIN
+    FileTypeD ::= BOOLEAN
+END

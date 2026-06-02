@@ -1,0 +1,11 @@
+ImportConsumer DEFINITIONS ::= BEGIN
+    IMPORTS
+        FileTypeA, FileTypeB, fileVal FROM ImportSourceA
+        FileTypeD FROM ImportSourceB;
+
+    FileSequence ::= SEQUENCE {
+        field1 FileTypeA,
+        field2 FileTypeD,
+        field3 FileTypeB
+    }
+END

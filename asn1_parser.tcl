@@ -1,7 +1,7 @@
 package provide asn1 0.2.0
 
 namespace eval asn1 {
-    namespace export parse_file parse_str ber_encode ber_decode ber_encode_value
+    namespace export parse_file parse_files parse_str ber_encode ber_decode ber_encode_value
 }
 
 # Tokenize the ASN.1 text into a list of tokens
@@ -677,6 +677,16 @@ proc asn1::parse_file {filepath} {
     set fp [open $filepath r]
     set data [read $fp]
     close $fp
+    return [asn1::parse_str $data]
+}
+
+proc asn1::parse_files {filepaths} {
+    set data ""
+    foreach filepath $filepaths {
+        set fp [open $filepath r]
+        append data [read $fp] "\n"
+        close $fp
+    }
     return [asn1::parse_str $data]
 }
 
