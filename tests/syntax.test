@@ -67,4 +67,38 @@ tcltest::test syntax-1.8 {Component-level RANGE constraint is parsed} -body {
     dict get $syntaxAst SyntaxModule types Record components age
 } -result {type INTEGER constraints {RANGE {0 120}}}
 
+tcltest::test syntax-invariant-1.1 {Valid parser AST satisfies invariants} -body {
+    expr {[asn1::validate_ast $syntaxAst] eq $syntaxAst}
+} -result 1
+
+tcltest::test syntax-invariant-1.2 {Module AST must include required dictionaries} -body {
+    set badAst [dict create BadModule [dict create tagging EXPLICIT imports {} types {}]]
+    asn1::validate_ast $badAst
+} -returnCodes error -match glob -result {*module BadModule missing values*}
+
+tcltest::test syntax-invariant-1.3 {Type AST must include type key} -body {
+    set badAst [dict create BadModule [dict create tagging EXPLICIT imports {} types [dict create Broken {}] values {}]]
+    asn1::validate_ast $badAst
+} -returnCodes error -match glob -result {*BadModule.Broken missing type*}
+
+tcltest::test syntax-invariant-1.4 {Structured type AST must include components} -body {
+    set badAst [dict create BadModule [dict create tagging EXPLICIT imports {} types [dict create Broken [dict create type SEQUENCE]] values {}]]
+    asn1::validate_ast $badAst
+} -returnCodes error -match glob -result {*BadModule.Broken SEQUENCE missing components*}
+
+tcltest::test syntax-invariant-1.5 {Collection type AST must include elementType} -body {
+    set badAst [dict create BadModule [dict create tagging EXPLICIT imports {} types [dict create Broken [dict create type {SEQUENCE OF}]] values {}]]
+    asn1::validate_ast $badAst
+} -returnCodes error -match glob -result {*BadModule.Broken SEQUENCE OF missing elementType*}
+
+tcltest::test syntax-invariant-1.6 {Named bits are only valid on BIT STRING} -body {
+    set badAst [dict create BadModule [dict create tagging EXPLICIT imports {} types [dict create Broken [dict create type INTEGER namedBits [dict create bit 0]]] values {}]]
+    asn1::validate_ast $badAst
+} -returnCodes error -match glob -result {*BadModule.Broken namedBits allowed only on BIT STRING*}
+
+tcltest::test syntax-invariant-1.7 {Tag AST must have a valid class} -body {
+    set badAst [dict create BadModule [dict create tagging EXPLICIT imports {} types [dict create Broken [dict create type INTEGER tag [dict create class BAD number 1]]] values {}]]
+    asn1::validate_ast $badAst
+} -returnCodes error -match glob -result {*BadModule.Broken tag has invalid class 'BAD'*}
+
 tcltest::cleanupTests

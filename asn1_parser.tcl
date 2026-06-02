@@ -867,7 +867,96 @@ proc asn1::parse {tokens} {
         }
     }
 
-    return [asn1::merge_imports $ast]
+    return [asn1::validate_ast [asn1::merge_imports $ast]]
+}
+
+proc asn1::assert_parse_invariant {condition message} {
+    if {!$condition} {
+        error "ASN.1 parser invariant failed: $message"
+    }
+}
+
+proc asn1::validate_tag_ast {tag path} {
+    asn1::assert_parse_invariant [dict exists $tag class] "$path tag missing class"
+    asn1::assert_parse_invariant [dict exists $tag number] "$path tag missing number"
+    set tagClass [dict get $tag class]
+    asn1::assert_parse_invariant [expr {$tagClass in {"UNIVERSAL" "APPLICATION" "CONTEXT-SPECIFIC" "PRIVATE"}}] "$path tag has invalid class '$tagClass'"
+    if {[dict exists $tag mode]} {
+        set tagMode [dict get $tag mode]
+        asn1::assert_parse_invariant [expr {$tagMode in {"IMPLICIT" "EXPLICIT"}}] "$path tag has invalid mode '$tagMode'"
+    }
+}
+
+proc asn1::validate_type_ast {typeDef path} {
+    asn1::assert_parse_invariant [dict exists $typeDef type] "$path missing type"
+    set typeName [dict get $typeDef type]
+    asn1::assert_parse_invariant [expr {$typeName ne ""}] "$path has empty type"
+
+    if {[dict exists $typeDef tag]} {
+        asn1::validate_tag_ast [dict get $typeDef tag] $path
+    }
+
+    if {$typeName in {"SEQUENCE" "SET" "CHOICE"}} {
+        asn1::assert_parse_invariant [dict exists $typeDef components] "$path $typeName missing components"
+        dict for {fieldName fieldDef} [dict get $typeDef components] {
+            asn1::validate_type_ast $fieldDef "$path.$fieldName"
+        }
+    }
+
+    if {$typeName in {"SEQUENCE OF" "SET OF"}} {
+        asn1::assert_parse_invariant [dict exists $typeDef elementType] "$path $typeName missing elementType"
+        asn1::assert_parse_invariant [expr {[dict get $typeDef elementType] ne ""}] "$path $typeName has empty elementType"
+    }
+
+    if {$typeName eq "ENUMERATED"} {
+        asn1::assert_parse_invariant [dict exists $typeDef values] "$path ENUMERATED missing values"
+    }
+
+    if {[dict exists $typeDef namedBits]} {
+        asn1::assert_parse_invariant [expr {$typeName eq "BIT STRING"}] "$path namedBits allowed only on BIT STRING"
+    }
+    if {[dict exists $typeDef namedNumbers]} {
+        asn1::assert_parse_invariant [expr {$typeName eq "INTEGER"}] "$path namedNumbers allowed only on INTEGER"
+    }
+    if {[dict exists $typeDef constraints]} {
+        dict for {constraintName constraintValue} [dict get $typeDef constraints] {
+            asn1::assert_parse_invariant [expr {$constraintName in {"SIZE" "RANGE"}}] "$path has unsupported constraint '$constraintName'"
+            asn1::assert_parse_invariant [expr {$constraintValue ne ""}] "$path constraint '$constraintName' is empty"
+        }
+    }
+}
+
+proc asn1::validate_ast {ast} {
+    dict for {moduleName moduleAst} $ast {
+        foreach key {tagging imports types values} {
+            asn1::assert_parse_invariant [dict exists $moduleAst $key] "module $moduleName missing $key"
+        }
+        set tagging [dict get $moduleAst tagging]
+        asn1::assert_parse_invariant [expr {$tagging in {"EXPLICIT" "IMPLICIT" "AUTOMATIC"}}] "module $moduleName has invalid tagging '$tagging'"
+
+        if {[dict exists $moduleAst exports]} {
+            foreach symbol [dict get $moduleAst exports] {
+                asn1::assert_parse_invariant [expr {$symbol ni {"," ";" ""}}] "module $moduleName has invalid export symbol '$symbol'"
+            }
+        }
+
+        dict for {sourceModule symbols} [dict get $moduleAst imports] {
+            asn1::assert_parse_invariant [expr {$sourceModule ne ""}] "module $moduleName has empty import source"
+            foreach symbol $symbols {
+                asn1::assert_parse_invariant [expr {$symbol ni {"," ";" ""}}] "module $moduleName imports invalid symbol '$symbol'"
+            }
+        }
+
+        dict for {typeName typeDef} [dict get $moduleAst types] {
+            asn1::validate_type_ast $typeDef "$moduleName.$typeName"
+        }
+
+        dict for {valueName valueDef} [dict get $moduleAst values] {
+            asn1::assert_parse_invariant [dict exists $valueDef type] "value $moduleName.$valueName missing type"
+            asn1::assert_parse_invariant [dict exists $valueDef value] "value $moduleName.$valueName missing value"
+        }
+    }
+    return $ast
 }
 
 proc asn1::merge_imports {ast} {
