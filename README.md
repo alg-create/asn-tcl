@@ -1,197 +1,224 @@
-# ASN.1 Module Parser for Tcl
+# TCL-ASN
 
-A pure **Tcl 8.6** package designed to parse ASN.1 schema/specification files (`.asn`) into a structured Tcl dictionary representation (Abstract Syntax Tree / AST). It also includes a basic BER encoder and decoder to serialize and deserialize values against the parsed AST.
+A pure Tcl 8.6 ASN.1 parser with a focused BER encoder/decoder.
 
----
+The project parses ASN.1 module text into a Tcl dictionary AST and can encode or decode a practical subset of BER using that AST. It is not a full ASN.1/X.680 implementation yet; the current focus is a compact, well-tested core that can grow safely.
+
+## Current Status
+
+Supported parser features include:
+
+- Module definitions with `EXPLICIT TAGS`, `IMPLICIT TAGS`, `AUTOMATIC TAGS`, and `EXTENSIBILITY IMPLIED`
+- `EXPORTS` and `IMPORTS`
+- Single-file parsing and multi-file parsing with import merging
+- Type assignments and simple value assignments
+- `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `OBJECT IDENTIFIER`, `NULL`
+- `SEQUENCE`, `SET`, `CHOICE`
+- `SEQUENCE OF` and `SET OF`
+- Inline nested `SEQUENCE`, `SET`, and `CHOICE`
+- Named numbers for `INTEGER`
+- Named bits for `BIT STRING`
+- Tags at type and component level
+- `OPTIONAL`, `DEFAULT`, extension markers, and extension additions storage
+- Simple `RANGE` and `SIZE` constraints at type and component level
+- AST invariant validation after parsing
+
+Supported BER features include:
+
+- Encode/decode for `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `OBJECT IDENTIFIER`
+- Encode/decode for `SEQUENCE`, `SET`, `CHOICE`, `SEQUENCE OF`, `SET OF`
+- Explicit and implicit tags
+- High tag numbers
+- Definite length encoding
+- Indefinite length decoding for supported constructed values
+- Constraint enforcement for parsed `RANGE` and `SIZE` constraints
+
+Notable limitations:
+
+- DER canonical encoding is not implemented.
+- Full X.682/X.683 constraint syntax is not implemented.
+- `REAL`, many string-family BER tags, object classes, parameterization, and information object sets are not implemented.
+- Import merging only uses modules already parsed by `parse_str`, `parse_file`, or `parse_files`; it does not auto-discover files.
 
 ## Project Layout
 
-The repository is structured logically to separate the core library logic from tests and sample schemas:
-
 ```text
 TCL-ASN/
-├── asn1_parser.tcl          # Core package file containing the parser and BER logic
-├── README.md                # Project documentation (this file)
-└── tests/                   # Test suite directory
-    ├── runtests.tcl         # Test runner / harness
-    ├── sanity_check.test    # Basic sanity test
-    ├── file_parser.test     # Main parser test suite
-    ├── modules.test         # Parser tests against the sample modules
-    ├── ber.test             # BER encoder/decoder test suite
-    └── modules/             # Directory containing sample ASN.1 schemas
+|-- asn1_parser.tcl       # Core parser and BER logic
+|-- pkgIndex.tcl          # Tcl package index
+|-- README.md
+|-- TESTING.md
+|-- tests/
+|   |-- runtests.tcl
+|   |-- syntax.test
+|   |-- modules.test
+|   |-- ber.test
+|   |-- ber_advanced.test
+|   |-- ber_constraints.test
+|   |-- new_types.test
+|   |-- extensibility.test
+|   |-- modules/
+|       |-- *.asn
 ```
 
----
+## API
 
-## API Reference
-
-To use the package in your Tcl script, require the `asn1` namespace:
+Load the package:
 
 ```tcl
+lappend auto_path /path/to/TCL-ASN
 package require asn1
 ```
 
-### `asn1::parse_file <filepath>`
-Reads the ASN.1 schema file at the specified path, tokenizes its contents, and parses them into a nested Tcl dictionary representation.
-* **Arguments:** `filepath` (string) — Absolute or relative path to the `.asn` file.
-* **Returns:** A Tcl dictionary representing the parsed AST.
+### `asn1::parse_str text`
 
-### `asn1::parse_str <text>`
-Parses raw ASN.1 schema text into the AST dictionary.
-* **Arguments:** `text` (string) — Raw ASN.1 specification text.
-* **Returns:** A Tcl dictionary representing the parsed AST.
+Parses ASN.1 module text into an AST.
 
-### `asn1::ber_encode <ast> <moduleName> <typeName> <value>`
-Encodes a Tcl value into BER binary format based on the parsed AST definition.
-* **Arguments:** 
-  * `ast` (dict) — The parsed ASN.1 AST dictionary.
-  * `moduleName` (string) — The name of the ASN.1 module containing the type.
-  * `typeName` (string) — The name of the type to encode against.
-  * `value` (any) — The Tcl value to encode.
-* **Returns:** A binary string representing the BER encoding.
-
-### `asn1::ber_decode <ast> <moduleName> <typeName> <bytes>`
-Decodes a BER binary string into a Tcl value based on the parsed AST definition.
-* **Arguments:**
-  * `ast` (dict) — The parsed ASN.1 AST dictionary.
-  * `moduleName` (string) — The name of the ASN.1 module containing the type.
-  * `typeName` (string) — The name of the type to decode against.
-  * `bytes` (binary string) — The BER binary data to decode.
-* **Returns:** A dictionary containing `value` (the decoded Tcl value) and `remainder` (any unconsumed bytes).
-
----
-
-## Abstract Syntax Tree (AST) Structure
-
-When a module is successfully parsed, it returns a nested Tcl dictionary structure. Below is an example of the parsed AST structure:
-
-### Example Schema
-```asn
-MyTestModule DEFINITIONS ::= BEGIN
-    MyInteger ::= INTEGER
-    
-    MySequence ::= SEQUENCE {
-        id INTEGER,
-        name OCTET STRING,
-        isActive BOOLEAN
-    }
-    
-    MyChoice ::= CHOICE {
-        opt1 MyInteger,
-        opt2 BOOLEAN
-    }
-END
-```
-
-### Resulting AST Dictionary Representation
 ```tcl
-MyTestModule {
-    tagging EXPLICIT
-    imports {}
-    types {
-        MyInteger {
-            type INTEGER
-        }
-        MySequence {
-            type SEQUENCE
-            components {
-                id {
-                    type INTEGER
-                }
-                name {
-                    type {OCTET STRING}
-                }
-                isActive {
-                    type BOOLEAN
-                }
-            }
-        }
-        MyChoice {
-            type CHOICE
-            components {
-                opt1 {
-                    type MyInteger
-                }
-                opt2 {
-                    type BOOLEAN
-                }
-            }
-        }
-    }
-    values {}
-}
+set ast [asn1::parse_str {
+    Demo DEFINITIONS ::= BEGIN
+        Age ::= INTEGER (0..120)
+    END
+}]
 ```
 
----
+### `asn1::parse_file filepath`
 
-### Constraints Representation
+Reads and parses one ASN.1 file.
 
-The parser also captures simple constraints (like `RANGE` and `SIZE`) placed on types.
+```tcl
+set ast [asn1::parse_file tests/modules/01-simple.asn]
+```
 
-```asn
-ConstraintsModule DEFINITIONS ::= BEGIN
+### `asn1::parse_files filepaths`
+
+Reads several ASN.1 files as one compilation unit. This is the recommended API when modules import symbols from other files.
+
+```tcl
+set ast [asn1::parse_files [list \
+    tests/modules/05-import-source-a.asn \
+    tests/modules/06-import-source-b.asn \
+    tests/modules/07-import-consumer.asn]]
+```
+
+### `asn1::ber_encode ast moduleName typeName value`
+
+Encodes a Tcl value into BER bytes using a parsed type definition.
+
+```tcl
+set bytes [asn1::ber_encode $ast Demo Age 42]
+puts [binary encode hex $bytes]
+```
+
+### `asn1::ber_decode ast moduleName typeName bytes`
+
+Decodes BER bytes using a parsed type definition. Returns a dictionary with `value` and `remainder`.
+
+```tcl
+set decoded [asn1::ber_decode $ast Demo Age [binary decode hex 02012a]]
+puts [dict get $decoded value]
+```
+
+### `asn1::ber_encode_value ast moduleName valueName`
+
+Encodes a parsed ASN.1 value assignment.
+
+## AST Shape
+
+Example schema:
+
+```asn1
+Demo DEFINITIONS IMPLICIT TAGS ::= BEGIN
+    EXPORTS Person;
+
     Age ::= INTEGER (0..120)
-    Name ::= PrintableString (SIZE(1..50))
+    Algorithm ::= OBJECT IDENTIFIER
+
+    Person ::= SEQUENCE {
+        age [0] IMPLICIT INTEGER (0..120),
+        name OCTET STRING (SIZE(1..50)),
+        flags BIT STRING { active(0), admin(1) } OPTIONAL,
+        scores SEQUENCE OF INTEGER (SIZE(1..3))
+    }
 END
 ```
 
+Representative AST structure:
+
 ```tcl
-ConstraintsModule {
-    tagging EXPLICIT
+Demo {
+    tagging IMPLICIT
     imports {}
+    exports {Person}
     types {
         Age {
             type INTEGER
             constraints {RANGE {0 120}}
         }
-        Name {
-            type PrintableString
-            constraints {SIZE {1 50}}
+        Algorithm {
+            type {OBJECT IDENTIFIER}
+        }
+        Person {
+            type SEQUENCE
+            components {
+                age {
+                    type INTEGER
+                    constraints {RANGE {0 120}}
+                    tag {class CONTEXT-SPECIFIC number 0 mode IMPLICIT}
+                }
+                name {
+                    type {OCTET STRING}
+                    constraints {SIZE {1 50}}
+                }
+                flags {
+                    type {BIT STRING}
+                    namedBits {active 0 admin 1}
+                    optional true
+                }
+                scores {
+                    type {SEQUENCE OF}
+                    elementType INTEGER
+                    constraints {SIZE {1 3}}
+                }
+            }
         }
     }
     values {}
 }
 ```
 
----
+## Imports
 
-### Imports Representation (`IMPORTS`)
+`IMPORTS` declarations are stored under each module's `imports` key. When source modules are present in the same parsed AST, imported type and value symbols are merged into the importing module.
 
-The parser supports parsing `IMPORTS` statements at the beginning of each module definition. The imported symbols are grouped by their source module and stored in the `imports` field at the root of the parsed module AST.
+Use `parse_files` for cross-file imports:
 
----
+```tcl
+set ast [asn1::parse_files [list source-a.asn source-b.asn consumer.asn]]
+```
 
-### Tagging Representation (IMPLICIT / EXPLICIT)
+`parse_file` intentionally parses only one file and does not search the filesystem for imported modules.
 
-The parser supports tagging overrides at three levels:
-1. **Module Level**: Default tagging (`EXPLICIT TAGS`, `IMPLICIT TAGS`, or `AUTOMATIC TAGS`) is stored in the `tagging` field at the root of each module.
-2. **Type Level**: Individual type definitions can have tag descriptors (e.g. `GlobalTaggedType ::= [APPLICATION 2] IMPLICIT INTEGER`).
-3. **Component Level**: Members inside `SEQUENCE` or `CHOICE` definitions can have tag descriptors.
+## Constraints
 
-When a tag is present on a type or component definition, a `tag` dictionary is added containing `class`, `number`, and `mode`.
+The parser currently stores simple constraints as:
 
----
+```tcl
+constraints {RANGE {0 120}}
+constraints {RANGE 42}
+constraints {SIZE {1 50}}
+constraints {SIZE 4}
+constraints {SIZE {4 | 8}}
+```
+
+BER encode/decode enforces these parsed `RANGE` and `SIZE` constraints for the supported types.
 
 ## Testing
 
-The project includes a comprehensive test suite based on `tcltest`.
+Run all Tcl tests:
 
-### Running all tests:
-From the root directory, execute `runtests.tcl` with Tcl:
-
-```bash
-tclsh tests/runtests.tcl
+```powershell
+tclsh tests\runtests.tcl
 ```
 
-### Example output:
-```text
-Tests began at Tue Jun 02 15:00:00 CEST 2026
-ber.test
-file_parser.test
-modules.test
-sanity_check.test
-
-Tests ended at Tue Jun 02 15:00:00 CEST 2026
-runtests.tcl:	Total	12	Passed	12	Skipped	0	Failed	0
-Sourced 4 Test Files.
-```
+Python `asn1tools` can also be used as a BER oracle for selected cases. See [TESTING.md](TESTING.md) for setup and usage.
