@@ -109,7 +109,7 @@ tcltest::test val-ber-4.1 {BER encode aliased type value} -body {
 
 tcltest::test val-ber-5.1 {BER encode SEQUENCE value} -body {
     binary encode hex [asn1::ber_encode_value $ast ValModule myRecord]
-} -result "3006020100a0101ff"
+} -result "300602010a0101ff"
 
 # --- Round-trip Tests ---
 

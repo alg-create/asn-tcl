@@ -422,8 +422,8 @@ proc asn1::parse {tokens} {
                             # Parse the value literal
                             set valTok [lindex $tokens $valAssignIdx]
                             if {$valTok eq "\{"} {
-                                # Sequence/Set value: { field1 val1, field2 val2 }
-                                incr valAssignIdx ;# skip '{'
+                                # Sequence/Set value parsing
+                                incr valAssignIdx
                                 set seqVal [dict create]
                                 while {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] ne "\}"} {
                                     set fName [lindex $tokens $valAssignIdx]
@@ -438,7 +438,7 @@ proc asn1::parse {tokens} {
                                     }
                                 }
                                 if {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] eq "\}"} {
-                                    incr valAssignIdx ;# skip '}'
+                                    incr valAssignIdx
                                 }
                                 dict set moduleAst values $valName [dict create type $valTypeRef value $seqVal]
                                 set i $valAssignIdx
