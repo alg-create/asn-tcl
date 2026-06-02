@@ -642,6 +642,34 @@ proc asn1::parse {tokens} {
         }
     }
 
+    return [asn1::merge_imports $ast]
+}
+
+proc asn1::merge_imports {ast} {
+    set changed 1
+    while {$changed} {
+        set changed 0
+        dict for {moduleName moduleAst} $ast {
+            if {![dict exists $moduleAst imports]} {
+                continue
+            }
+            dict for {sourceModule symbols} [dict get $moduleAst imports] {
+                if {![dict exists $ast $sourceModule]} {
+                    continue
+                }
+                foreach symbol $symbols {
+                    if {[dict exists $ast $sourceModule types $symbol] && ![dict exists $ast $moduleName types $symbol]} {
+                        dict set ast $moduleName types $symbol [dict get $ast $sourceModule types $symbol]
+                        set changed 1
+                    }
+                    if {[dict exists $ast $sourceModule values $symbol] && ![dict exists $ast $moduleName values $symbol]} {
+                        dict set ast $moduleName values $symbol [dict get $ast $sourceModule values $symbol]
+                        set changed 1
+                    }
+                }
+            }
+        }
+    }
     return $ast
 }
 

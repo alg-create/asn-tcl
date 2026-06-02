@@ -34,4 +34,53 @@ tcltest::test modules-1.4 {Parse 04-constraints.asn} -body {
     expr {$parsed eq $expected}
 } -result 1
 
+set importSchema {
+    SourceModuleA DEFINITIONS ::= BEGIN
+        TypeA ::= INTEGER
+        TypeB ::= OCTET STRING
+        valC INTEGER ::= 7
+    END
+
+    SourceModuleB DEFINITIONS ::= BEGIN
+        TypeD ::= BOOLEAN
+    END
+
+    MyImportModule DEFINITIONS ::= BEGIN
+        IMPORTS
+            TypeA, TypeB, valC FROM SourceModuleA
+            TypeD FROM SourceModuleB;
+
+        MySequence ::= SEQUENCE {
+            field1 TypeA,
+            field2 TypeD,
+            field3 TypeB
+        }
+    END
+}
+
+tcltest::test modules-2.1 {Imported type symbols are merged into importing module AST} -body {
+    set parsed [asn1::parse_str $importSchema]
+    list \
+        [dict get $parsed MyImportModule types TypeA] \
+        [dict get $parsed MyImportModule types TypeB] \
+        [dict get $parsed MyImportModule types TypeD]
+} -result {{type INTEGER} {type {OCTET STRING}} {type BOOLEAN}}
+
+tcltest::test modules-2.2 {Imported value symbols are merged into importing module AST} -body {
+    set parsed [asn1::parse_str $importSchema]
+    dict get $parsed MyImportModule values valC
+} -result {type INTEGER value 7}
+
+tcltest::test modules-2.3 {BER encode resolves merged imported types} -body {
+    set parsed [asn1::parse_str $importSchema]
+    set value [dict create field1 5 field2 1 field3 abc]
+    binary encode hex [asn1::ber_encode $parsed MyImportModule MySequence $value]
+} -result "300b0201050101ff0403616263"
+
+tcltest::test modules-2.4 {BER decode resolves merged imported types} -body {
+    set parsed [asn1::parse_str $importSchema]
+    set bytes [binary decode hex "300b0201050101ff0403616263"]
+    dict get [asn1::ber_decode $parsed MyImportModule MySequence $bytes] value
+} -result {field1 5 field2 1 field3 abc}
+
 tcltest::cleanupTests
