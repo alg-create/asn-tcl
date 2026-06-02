@@ -153,10 +153,13 @@ proc asn1::parse_tag_optional {tokensVar indexVar} {
 # Handles extension markers (...), OPTIONAL, DEFAULT, tags, and
 # multi-word types (OCTET STRING, BIT STRING).
 # Appends any errors to the errorsVar list in the caller.
-proc asn1::parse_components {tokensVar indexVar errorsVar} {
+proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""}} {
     upvar 1 $tokensVar tokens
     upvar 1 $indexVar i
     upvar 1 $errorsVar errors
+    if {$moduleAstVar ne ""} {
+        upvar 1 $moduleAstVar moduleAst
+    }
     set len [llength $tokens]
     set fields [dict create]
     set extensions [dict create]
@@ -193,17 +196,62 @@ proc asn1::parse_components {tokensVar indexVar errorsVar} {
 
         set fieldType [lindex $tokens $i]
 
-        # Handle OCTET STRING, BIT STRING
+        # Handle OCTET STRING, BIT STRING, OBJECT IDENTIFIER
         if {$fieldType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
             set fieldType "$fieldType STRING"
             incr i
+        } elseif {$fieldType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
+            set fieldType "OBJECT IDENTIFIER"
+            incr i
         }
 
-        set fieldInfo [dict create type $fieldType]
-        if {$memberTag ne {}} {
-            dict set fieldInfo tag $memberTag
+        # Handle SEQUENCE OF / SET OF
+        if {$fieldType in {"SEQUENCE" "SET"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "OF"} {
+            set ofType $fieldType
+            incr i 2 ;# skip past "OF"
+            # Read the element type
+            set elemType [lindex $tokens $i]
+            if {$elemType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
+                set elemType "$elemType STRING"
+                incr i
+            } elseif {$elemType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
+                set elemType "OBJECT IDENTIFIER"
+                incr i
+            }
+            set fieldInfo [dict create type "$ofType OF" elementType $elemType]
+            if {$memberTag ne {}} {
+                dict set fieldInfo tag $memberTag
+            }
+            incr i
+        } elseif {$fieldType in {"SEQUENCE" "SET" "CHOICE"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "\{"} {
+            # Inline nested complex type — parse recursively and register as synthetic type
+            set syntheticName "${parentName}_${fieldName}"
+            incr i 2 ;# skip past "{"
+            if {$fieldType eq "CHOICE" || $fieldType eq "SEQUENCE" || $fieldType eq "SET"} {
+                lassign [asn1::parse_components tokens i errors moduleAst $syntheticName] subFields subExtensible subExtensions
+                if {$moduleAstVar ne ""} {
+                    dict set moduleAst types $syntheticName type $fieldType
+                    dict set moduleAst types $syntheticName components $subFields
+                    if {$subExtensible} {
+                        dict set moduleAst types $syntheticName extensible 1
+                        dict set moduleAst types $syntheticName extensionAdditions $subExtensions
+                    }
+                }
+            }
+            if {$i < $len && [lindex $tokens $i] eq "\}"} {
+                incr i ;# skip closing brace
+            }
+            set fieldInfo [dict create type $syntheticName]
+            if {$memberTag ne {}} {
+                dict set fieldInfo tag $memberTag
+            }
+        } else {
+            set fieldInfo [dict create type $fieldType]
+            if {$memberTag ne {}} {
+                dict set fieldInfo tag $memberTag
+            }
+            incr i
         }
-        incr i
 
         # Handle OPTIONAL keyword
         if {$i < $len && [lindex $tokens $i] eq "OPTIONAL"} {
@@ -315,10 +363,44 @@ proc asn1::parse {tokens} {
                         set tagDict [asn1::parse_tag_optional tokens tempIdx]
                         set rhsToken [lindex $tokens $tempIdx]
 
-                        if {$rhsToken eq "SEQUENCE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
+                        if {$rhsToken eq "SEQUENCE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "OF"} {
+                            # Parse SEQUENCE OF
+                            set i [expr {$tempIdx + 2}]
+                            set elemType [lindex $tokens $i]
+                            if {$elemType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
+                                set elemType "$elemType STRING"
+                                incr i
+                            } elseif {$elemType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
+                                set elemType "OBJECT IDENTIFIER"
+                                incr i
+                            }
+                            incr i
+                            dict set moduleAst types $ident type "SEQUENCE OF"
+                            dict set moduleAst types $ident elementType $elemType
+                            if {$tagDict ne {}} {
+                                dict set moduleAst types $ident tag $tagDict
+                            }
+                        } elseif {$rhsToken eq "SET" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "OF"} {
+                            # Parse SET OF
+                            set i [expr {$tempIdx + 2}]
+                            set elemType [lindex $tokens $i]
+                            if {$elemType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
+                                set elemType "$elemType STRING"
+                                incr i
+                            } elseif {$elemType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
+                                set elemType "OBJECT IDENTIFIER"
+                                incr i
+                            }
+                            incr i
+                            dict set moduleAst types $ident type "SET OF"
+                            dict set moduleAst types $ident elementType $elemType
+                            if {$tagDict ne {}} {
+                                dict set moduleAst types $ident tag $tagDict
+                            }
+                        } elseif {$rhsToken eq "SEQUENCE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
                             # Parse SEQUENCE
                             set i [expr {$tempIdx + 2}]
-                            lassign [asn1::parse_components tokens i errors] fields extensible extensions
+                            lassign [asn1::parse_components tokens i errors moduleAst $ident] fields extensible extensions
                             dict set moduleAst types $ident type "SEQUENCE"
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
@@ -338,7 +420,7 @@ proc asn1::parse {tokens} {
                         } elseif {$rhsToken eq "CHOICE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
                             # Parse CHOICE
                             set i [expr {$tempIdx + 2}]
-                            lassign [asn1::parse_components tokens i errors] fields extensible extensions
+                            lassign [asn1::parse_components tokens i errors moduleAst $ident] fields extensible extensions
                             dict set moduleAst types $ident type "CHOICE"
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
@@ -358,7 +440,7 @@ proc asn1::parse {tokens} {
                         } elseif {$rhsToken eq "SET" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
                             # Parse SET
                             set i [expr {$tempIdx + 2}]
-                            lassign [asn1::parse_components tokens i errors] fields extensible extensions
+                            lassign [asn1::parse_components tokens i errors moduleAst $ident] fields extensible extensions
                             dict set moduleAst types $ident type "SET"
                             if {$tagDict ne {}} {
                                 dict set moduleAst types $ident tag $tagDict
@@ -426,6 +508,9 @@ proc asn1::parse {tokens} {
                             set fieldType $rhsToken
                             if {$fieldType in {"OCTET" "BIT"} && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "STRING"} {
                                 set fieldType "$fieldType STRING"
+                                set i [expr {$tempIdx + 2}]
+                            } elseif {$fieldType eq "OBJECT" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "IDENTIFIER"} {
+                                set fieldType "OBJECT IDENTIFIER"
                                 set i [expr {$tempIdx + 2}]
                             } else {
                                 set i [expr {$tempIdx + 1}]

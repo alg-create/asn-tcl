@@ -1,0 +1,249 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+# ======================================================================
+# Schema with SEQUENCE OF, SET OF, OBJECT IDENTIFIER, and inline types
+# ======================================================================
+set schema {
+    NewTypesModule DEFINITIONS ::= BEGIN
+        -- SEQUENCE OF: an ordered list of elements
+        IntList ::= SEQUENCE OF INTEGER
+
+        -- SET OF: an unordered collection of elements
+        NameSet ::= SET OF OCTET STRING
+
+        -- OBJECT IDENTIFIER
+        MyOID ::= OBJECT IDENTIFIER
+
+        -- SEQUENCE OF with a named type reference
+        BoolList ::= SEQUENCE OF BOOLEAN
+
+        -- Inline nested SEQUENCE inside SEQUENCE
+        Outer ::= SEQUENCE {
+            label OCTET STRING,
+            inner SEQUENCE {
+                x INTEGER,
+                y INTEGER
+            }
+        }
+
+        -- Inline nested CHOICE inside SEQUENCE
+        WithChoice ::= SEQUENCE {
+            id INTEGER,
+            option CHOICE {
+                text OCTET STRING,
+                num  INTEGER
+            }
+        }
+
+        -- Inline nested SET inside SEQUENCE
+        WithSet ::= SEQUENCE {
+            tag OCTET STRING,
+            props SET {
+                a INTEGER,
+                b INTEGER
+            }
+        }
+
+        -- SEQUENCE containing a SEQUENCE OF field
+        Container ::= SEQUENCE {
+            name OCTET STRING,
+            items SEQUENCE OF INTEGER
+        }
+
+        -- OID inside a SEQUENCE
+        AlgorithmId ::= SEQUENCE {
+            algorithm OBJECT IDENTIFIER,
+            version   INTEGER
+        }
+    END
+}
+
+set ast [asn1::parse_str $schema]
+
+# ======================================================================
+# 1. SEQUENCE OF parsing tests
+# ======================================================================
+tcltest::test newtype-parse-1.1 {SEQUENCE OF parsed as type} -body {
+    dict get $ast NewTypesModule types IntList type
+} -result "SEQUENCE OF"
+
+tcltest::test newtype-parse-1.2 {SEQUENCE OF records element type} -body {
+    dict get $ast NewTypesModule types IntList elementType
+} -result "INTEGER"
+
+tcltest::test newtype-parse-1.3 {SET OF parsed as type} -body {
+    dict get $ast NewTypesModule types NameSet type
+} -result "SET OF"
+
+tcltest::test newtype-parse-1.4 {SET OF records element type} -body {
+    dict get $ast NewTypesModule types NameSet elementType
+} -result "OCTET STRING"
+
+# ======================================================================
+# 2. OBJECT IDENTIFIER parsing tests
+# ======================================================================
+tcltest::test newtype-parse-2.1 {OBJECT IDENTIFIER parsed as type} -body {
+    dict get $ast NewTypesModule types MyOID type
+} -result "OBJECT IDENTIFIER"
+
+# ======================================================================
+# 3. Inline nested type parsing tests
+# ======================================================================
+tcltest::test newtype-parse-3.1 {Inline SEQUENCE creates synthetic type} -body {
+    # The inline SEQUENCE inside Outer should be stored as a named type
+    set innerType [dict get $ast NewTypesModule types Outer components inner type]
+    # It should reference a generated type name
+    dict exists $ast NewTypesModule types $innerType
+} -result 1
+
+tcltest::test newtype-parse-3.2 {Inline SEQUENCE has correct components} -body {
+    set innerType [dict get $ast NewTypesModule types Outer components inner type]
+    set comps [dict get $ast NewTypesModule types $innerType components]
+    lsort [dict keys $comps]
+} -result {x y}
+
+tcltest::test newtype-parse-3.3 {Inline CHOICE creates synthetic type} -body {
+    set choiceType [dict get $ast NewTypesModule types WithChoice components option type]
+    dict exists $ast NewTypesModule types $choiceType
+} -result 1
+
+tcltest::test newtype-parse-3.4 {Inline CHOICE has correct components} -body {
+    set choiceType [dict get $ast NewTypesModule types WithChoice components option type]
+    set comps [dict get $ast NewTypesModule types $choiceType components]
+    lsort [dict keys $comps]
+} -result {num text}
+
+tcltest::test newtype-parse-3.5 {Inline SET creates synthetic type} -body {
+    set setType [dict get $ast NewTypesModule types WithSet components props type]
+    dict exists $ast NewTypesModule types $setType
+} -result 1
+
+# ======================================================================
+# 4. BER encode/decode SEQUENCE OF
+# ======================================================================
+tcltest::test newtype-ber-4.1 {Encode SEQUENCE OF INTEGER} -body {
+    # [10, 20, 30] -> SEQUENCE tag 0x30, containing three INTEGER TLVs
+    binary encode hex [asn1::ber_encode $ast NewTypesModule IntList {10 20 30}]
+} -result "300902010a0201140201[format %02x 30]"
+
+tcltest::test newtype-ber-4.2 {Decode SEQUENCE OF INTEGER} -body {
+    set encoded [asn1::ber_encode $ast NewTypesModule IntList {10 20 30}]
+    dict get [asn1::ber_decode $ast NewTypesModule IntList $encoded] value
+} -result {10 20 30}
+
+tcltest::test newtype-ber-4.3 {Encode empty SEQUENCE OF} -body {
+    binary encode hex [asn1::ber_encode $ast NewTypesModule IntList {}]
+} -result "3000"
+
+tcltest::test newtype-ber-4.4 {Decode empty SEQUENCE OF} -body {
+    set bytes [binary decode hex "3000"]
+    dict get [asn1::ber_decode $ast NewTypesModule IntList $bytes] value
+} -result {}
+
+tcltest::test newtype-ber-4.5 {Encode SEQUENCE OF BOOLEAN} -body {
+    binary encode hex [asn1::ber_encode $ast NewTypesModule BoolList {1 0 1}]
+} -result "30090101ff0101000101ff"
+
+tcltest::test newtype-ber-4.6 {Decode SEQUENCE OF BOOLEAN} -body {
+    set encoded [asn1::ber_encode $ast NewTypesModule BoolList {1 0 1}]
+    dict get [asn1::ber_decode $ast NewTypesModule BoolList $encoded] value
+} -result {1 0 1}
+
+# ======================================================================
+# 5. BER encode/decode SET OF
+# ======================================================================
+tcltest::test newtype-ber-5.1 {Encode SET OF OCTET STRING} -body {
+    # SET OF uses tag 0x31
+    set encoded [asn1::ber_encode $ast NewTypesModule NameSet {hi bye}]
+    # Verify tag is 0x31
+    string range [binary encode hex $encoded] 0 1
+} -result "31"
+
+tcltest::test newtype-ber-5.2 {Decode SET OF OCTET STRING} -body {
+    set encoded [asn1::ber_encode $ast NewTypesModule NameSet {hi bye}]
+    dict get [asn1::ber_decode $ast NewTypesModule NameSet $encoded] value
+} -result {hi bye}
+
+# ======================================================================
+# 6. BER encode/decode OBJECT IDENTIFIER
+# ======================================================================
+tcltest::test newtype-ber-6.1 {Encode OID 1.2.840.113549} -body {
+    # First two: 1*40+2 = 42 = 0x2A
+    # 840 = 0x348 -> base128: 86 48
+    # 113549 = 0x1BB8D -> base128: 86 F7 0D
+    binary encode hex [asn1::ber_encode $ast NewTypesModule MyOID {1 2 840 113549}]
+} -result "06062a864886f70d"
+
+tcltest::test newtype-ber-6.2 {Decode OID 1.2.840.113549} -body {
+    set bytes [binary decode hex "06062a864886f70d"]
+    dict get [asn1::ber_decode $ast NewTypesModule MyOID $bytes] value
+} -result {1 2 840 113549}
+
+tcltest::test newtype-ber-6.3 {Encode simple OID 2.5.4.3} -body {
+    # First two: 2*40+5 = 85 = 0x55
+    # 4 = 0x04, 3 = 0x03
+    binary encode hex [asn1::ber_encode $ast NewTypesModule MyOID {2 5 4 3}]
+} -result "0603550403"
+
+tcltest::test newtype-ber-6.4 {Decode simple OID 2.5.4.3} -body {
+    set bytes [binary decode hex "0603550403"]
+    dict get [asn1::ber_decode $ast NewTypesModule MyOID $bytes] value
+} -result {2 5 4 3}
+
+tcltest::test newtype-ber-6.5 {OID roundtrip 1.3.6.1.4.1.311} -body {
+    set oid {1 3 6 1 4 1 311}
+    set encoded [asn1::ber_encode $ast NewTypesModule MyOID $oid]
+    dict get [asn1::ber_decode $ast NewTypesModule MyOID $encoded] value
+} -result {1 3 6 1 4 1 311}
+
+# ======================================================================
+# 7. BER encode/decode inline nested types
+# ======================================================================
+tcltest::test newtype-ber-7.1 {Encode SEQUENCE with inline SEQUENCE} -body {
+    set val [dict create label "AB" inner [dict create x 1 y 2]]
+    set encoded [asn1::ber_encode $ast NewTypesModule Outer $val]
+    # Decode it back for roundtrip
+    set decoded [dict get [asn1::ber_decode $ast NewTypesModule Outer $encoded] value]
+    list [dict get $decoded label] [dict get $decoded inner]
+} -result {AB {x 1 y 2}}
+
+tcltest::test newtype-ber-7.2 {Encode SEQUENCE with inline CHOICE} -body {
+    set val [dict create id 7 option [dict create num 99]]
+    set encoded [asn1::ber_encode $ast NewTypesModule WithChoice $val]
+    set decoded [dict get [asn1::ber_decode $ast NewTypesModule WithChoice $encoded] value]
+    list [dict get $decoded id] [dict get $decoded option]
+} -result {7 {num 99}}
+
+tcltest::test newtype-ber-7.3 {Encode SEQUENCE with inline SET} -body {
+    set val [dict create tag "T" props [dict create a 3 b 4]]
+    set encoded [asn1::ber_encode $ast NewTypesModule WithSet $val]
+    set decoded [dict get [asn1::ber_decode $ast NewTypesModule WithSet $encoded] value]
+    list [dict get $decoded tag] [dict get $decoded props]
+} -result {T {a 3 b 4}}
+
+# ======================================================================
+# 8. SEQUENCE OF as a field inside SEQUENCE
+# ======================================================================
+tcltest::test newtype-ber-8.1 {Encode SEQUENCE containing SEQUENCE OF field} -body {
+    set val [dict create name "test" items {1 2 3}]
+    set encoded [asn1::ber_encode $ast NewTypesModule Container $val]
+    set decoded [dict get [asn1::ber_decode $ast NewTypesModule Container $encoded] value]
+    list [dict get $decoded name] [dict get $decoded items]
+} -result {test {1 2 3}}
+
+# ======================================================================
+# 9. OBJECT IDENTIFIER inside SEQUENCE
+# ======================================================================
+tcltest::test newtype-ber-9.1 {Encode SEQUENCE with OID field} -body {
+    set val [dict create algorithm {1 2 840 113549 1 1 11} version 1]
+    set encoded [asn1::ber_encode $ast NewTypesModule AlgorithmId $val]
+    set decoded [dict get [asn1::ber_decode $ast NewTypesModule AlgorithmId $encoded] value]
+    list [dict get $decoded algorithm] [dict get $decoded version]
+} -result {{1 2 840 113549 1 1 11} 1}
+
+tcltest::cleanupTests
