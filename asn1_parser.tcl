@@ -1888,6 +1888,29 @@ proc asn1::ber_decode {ast moduleName typeName bytes} {
     return [dict create value $val remainder $remainder]
 }
 
+proc asn1::ber_peek_tag {bytes idx} {
+    set probeIdx $idx
+    asn1::ber_decode_tag $bytes probeIdx tagClass constructedBit tagNum
+    return [list $tagClass $constructedBit $tagNum]
+}
+
+proc asn1::ber_type_accepts_any_tag {ast moduleName typeDef} {
+    return [expr {[asn1::ber_resolve_base_type $ast $moduleName $typeDef] eq "ANY"}]
+}
+
+proc asn1::ber_tag_matches_type {ast moduleName typeDef parsedTag} {
+    set expectedTags [asn1::get_expected_tag $ast $moduleName $typeDef]
+    if {$expectedTags eq {}} {
+        return [asn1::ber_type_accepts_any_tag $ast $moduleName $typeDef]
+    }
+    return [expr {[lsearch -exact $expectedTags $parsedTag] != -1}]
+}
+
+proc asn1::ber_component_default_value {ast moduleName fieldDef} {
+    set fieldBaseType [asn1::ber_resolve_base_type $ast $moduleName $fieldDef]
+    return [asn1::convert_value_literal $fieldBaseType [dict get $fieldDef default]]
+}
+
 proc asn1::ber_skip_value {bytes idxVar} {
     upvar 1 $idxVar idx
     asn1::ber_decode_tag $bytes idx _ _ _
@@ -2044,7 +2067,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             set decodedValue [encoding convertfrom utf-8 [asn1::ber_decode_string_value $valBytes $tagCons]]
             asn1::ber_validate_character_string $baseType $decodedValue
         }
-        "SEQUENCE" - "SET" {
+        "SEQUENCE" {
             set result [dict create]
             set subIdx 0
             set comps [dict get $typeDef components]
@@ -2053,8 +2076,44 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 if {$subIdx >= $valLen} {
                     if {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} { continue }
                     if {[dict exists $fieldDef default]} {
-                        set fieldBaseType [asn1::ber_resolve_base_type $ast $moduleName $fieldDef]
-                        dict set result $fieldName [asn1::convert_value_literal $fieldBaseType [dict get $fieldDef default]]
+                        dict set result $fieldName [asn1::ber_component_default_value $ast $moduleName $fieldDef]
+                        continue
+                    }
+                    error "Missing mandatory field $fieldName"
+                }
+
+                set nextTag [asn1::ber_peek_tag $valBytes $subIdx]
+                if {![asn1::ber_tag_matches_type $ast $moduleName $fieldDef $nextTag]} {
+                    if {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} {
+                        continue
+                    }
+                    if {[dict exists $fieldDef default]} {
+                        dict set result $fieldName [asn1::ber_component_default_value $ast $moduleName $fieldDef]
+                        continue
+                    }
+                    error "Expected field $fieldName tag [asn1::get_expected_tag $ast $moduleName $fieldDef] but got $nextTag"
+                }
+
+                set fieldVal [asn1::ber_decode_type $ast $moduleName $fieldDef $valBytes subIdx]
+                dict set result $fieldName $fieldVal
+            }
+            if {[dict exists $typeDef extensible] && [dict get $typeDef extensible]} {
+                while {$subIdx < $valLen} {
+                    asn1::ber_skip_value $valBytes subIdx
+                }
+            }
+            set decodedValue $result
+        }
+        "SET" {
+            set result [dict create]
+            set subIdx 0
+            set comps [dict get $typeDef components]
+            set valLen [string length $valBytes]
+            dict for {fieldName fieldDef} $comps {
+                if {$subIdx >= $valLen} {
+                    if {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} { continue }
+                    if {[dict exists $fieldDef default]} {
+                        dict set result $fieldName [asn1::ber_component_default_value $ast $moduleName $fieldDef]
                         continue
                     }
                     error "Missing mandatory field $fieldName"

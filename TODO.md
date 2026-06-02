@@ -34,10 +34,10 @@ Requested must-haves from downstream users, mapped to current project status:
     - `VisibleString`
     - additional SCAPI string families as fixtures require them
 - `DEFAULT` handling.
-  - Current status: parser stores defaults; decode materializes defaults for missing trailing fields in `SEQUENCE`/`SET`; encode omits default-valued fields.
+  - Current status: parser stores defaults; encode omits default-valued fields; `SEQUENCE` decode uses tags to skip absent `OPTIONAL`/`DEFAULT` fields and materialize defaults.
   - Needed:
     - clear API option for materialized vs omitted defaults if downstream needs it
-    - robust handling for omitted default/optional fields in the middle of `SEQUENCE`/`SET`
+    - equivalent tag-aware default/optional handling for `SET` when `SET` decode is made order-independent
 - Clean unknown extension handling.
   - Current status: extensible `SEQUENCE` skips unknown trailing fields; `CHOICE` extension handling is limited.
   - Needed:

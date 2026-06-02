@@ -1,0 +1,42 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+set schema {
+    PresenceModule DEFINITIONS IMPLICIT TAGS ::= BEGIN
+        TaggedMiddle ::= SEQUENCE {
+            id INTEGER,
+            name [0] UTF8String OPTIONAL,
+            language [1] UTF8String DEFAULT "en",
+            active BOOLEAN
+        }
+
+        UniversalMiddle ::= SEQUENCE {
+            id INTEGER,
+            note UTF8String OPTIONAL,
+            active BOOLEAN
+        }
+    END
+}
+
+set ast [asn1::parse_str $schema]
+
+tcltest::test ber-seq-presence-1.1 {Decode skips absent tagged OPTIONAL and DEFAULT fields in middle} -body {
+    set bytes [binary decode hex "30060201050101ff"]
+    dict get [asn1::ber_decode $ast PresenceModule TaggedMiddle $bytes] value
+} -result {id 5 language en active 1}
+
+tcltest::test ber-seq-presence-1.2 {Decode materializes middle DEFAULT when following mandatory field is present} -body {
+    set bytes [binary decode hex "300b0201058003626f62010100"]
+    dict get [asn1::ber_decode $ast PresenceModule TaggedMiddle $bytes] value
+} -result {id 5 name bob language en active 0}
+
+tcltest::test ber-seq-presence-1.3 {Decode skips absent untagged OPTIONAL when next universal tag differs} -body {
+    set bytes [binary decode hex "30060201070101ff"]
+    dict get [asn1::ber_decode $ast PresenceModule UniversalMiddle $bytes] value
+} -result {id 7 active 1}
+
+tcltest::cleanupTests
