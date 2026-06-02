@@ -1,7 +1,7 @@
 package provide asn1 0.2.0
 
 namespace eval asn1 {
-    namespace export parse_file parse_str
+    namespace export parse_file parse_str ber_encode ber_decode
 }
 
 # Tokenize the ASN.1 text into a list of tokens
@@ -418,4 +418,216 @@ proc asn1::parse_file {filepath} {
 
 proc asn1::parse_str {moduleText} {
     return [asn1::parse [asn1::tokenize $moduleText]]
+}
+
+# --- BER Encoder ---
+
+proc asn1::ber_encode_length {len} {
+    if {$len < 128} {
+        return [binary format c $len]
+    }
+    set bytes {}
+    set temp $len
+    while {$temp > 0} {
+        set bytes [binary format c [expr {$temp & 0xFF}]]$bytes
+        set temp [expr {$temp >> 8}]
+    }
+    set numBytes [string length $bytes]
+    return [binary format c [expr {0x80 | $numBytes}]]$bytes
+}
+
+proc asn1::ber_encode_integer {val} {
+    if {$val == 0} {
+        return [binary format c 0]
+    }
+    set bytes {}
+    set temp $val
+    for {set i 0} {$i < 8} {incr i} {
+        set b [expr {$temp & 0xFF}]
+        set bytes [binary format c $b]$bytes
+        set temp [expr {$temp >> 8}]
+        if {$val > 0 && $temp == 0 && ($b & 0x80) == 0} { break }
+        if {$val > 0 && $temp == 0 && ($b & 0x80) != 0} { 
+            set bytes [binary format c 0]$bytes
+            break 
+        }
+        if {$val < 0 && $temp == -1 && ($b & 0x80) != 0} { break }
+        if {$val < 0 && $temp == -1 && ($b & 0x80) == 0} {
+            set bytes [binary format c 255]$bytes
+            break
+        }
+    }
+    return $bytes
+}
+
+proc asn1::ber_encode {ast moduleName typeName value} {
+    set typeDef [dict get $ast $moduleName types $typeName]
+    return [asn1::ber_encode_type $ast $moduleName $typeDef $value]
+}
+
+proc asn1::ber_encode_type {ast moduleName typeDef value} {
+    set baseType [dict get $typeDef type]
+    while {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "CHOICE"}} {
+        set typeDef [dict get $ast $moduleName types $baseType]
+        set baseType [dict get $typeDef type]
+    }
+
+    set tagNum 0
+    switch $baseType {
+        "INTEGER" {
+            set tagNum 2
+            set valBytes [asn1::ber_encode_integer $value]
+        }
+        "BOOLEAN" {
+            set tagNum 1
+            set valBytes [binary format c [expr {$value ? 0xFF : 0x00}]]
+        }
+        "OCTET STRING" {
+            set tagNum 4
+            set valBytes [encoding convertto utf-8 $value]
+        }
+        "SEQUENCE" {
+            set tagNum 16
+            set valBytes ""
+            set comps [dict get $typeDef components]
+            dict for {fieldName fieldDef} $comps {
+                if {[dict exists $value $fieldName]} {
+                    append valBytes [asn1::ber_encode_type $ast $moduleName $fieldDef [dict get $value $fieldName]]
+                }
+            }
+        }
+        "CHOICE" {
+            set keys [dict keys $value]
+            if {[llength $keys] != 1} { error "CHOICE value must have exactly one key" }
+            set chosenField [lindex $keys 0]
+            set fieldDef [dict get [dict get $typeDef components] $chosenField]
+            return [asn1::ber_encode_type $ast $moduleName $fieldDef [dict get $value $chosenField]]
+        }
+    }
+
+    set tagByte $tagNum
+    if {$baseType eq "SEQUENCE"} {
+        set tagByte [expr {$tagByte | 0x20}]
+    }
+
+    set lenBytes [asn1::ber_encode_length [string length $valBytes]]
+    return [binary format c $tagByte]${lenBytes}${valBytes}
+}
+
+# --- BER Decoder ---
+
+proc asn1::ber_decode_length {bytes idxVar} {
+    upvar 1 $idxVar idx
+    binary scan [string index $bytes $idx] c b
+    set b [expr {$b & 0xFF}]
+    incr idx
+    if {$b < 128} {
+        return $b
+    }
+    set numBytes [expr {$b & 0x7F}]
+    set len 0
+    for {set i 0} {$i < $numBytes} {incr i} {
+        binary scan [string index $bytes $idx] c b
+        set b [expr {$b & 0xFF}]
+        incr idx
+        set len [expr {($len << 8) | $b}]
+    }
+    return $len
+}
+
+proc asn1::ber_decode_integer {bytes} {
+    set len [string length $bytes]
+    if {$len == 0} { return 0 }
+    binary scan [string index $bytes 0] c firstByte
+    set val 0
+    if {$firstByte & 0x80} {
+        set val -1
+    }
+    for {set i 0} {$i < $len} {incr i} {
+        binary scan [string index $bytes $i] c b
+        set b [expr {$b & 0xFF}]
+        set val [expr {($val << 8) | $b}]
+    }
+    return $val
+}
+
+proc asn1::get_expected_tag {ast moduleName typeDef} {
+    set baseType [dict get $typeDef type]
+    while {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "CHOICE"}} {
+        set typeDef [dict get $ast $moduleName types $baseType]
+        set baseType [dict get $typeDef type]
+    }
+    switch $baseType {
+        "INTEGER" { return 2 }
+        "BOOLEAN" { return 1 }
+        "OCTET STRING" { return 4 }
+        "SEQUENCE" { return [expr {16 | 0x20}] }
+        "CHOICE" { return -1 }
+    }
+}
+
+proc asn1::ber_decode {ast moduleName typeName bytes} {
+    set typeDef [dict get $ast $moduleName types $typeName]
+    set idx 0
+    set val [asn1::ber_decode_type $ast $moduleName $typeDef $bytes idx]
+    set remainder [string range $bytes $idx end]
+    return [dict create value $val remainder $remainder]
+}
+
+proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
+    upvar 1 $idxVar idx
+
+    set baseType [dict get $typeDef type]
+    while {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "CHOICE"}} {
+        set typeDef [dict get $ast $moduleName types $baseType]
+        set baseType [dict get $typeDef type]
+    }
+
+    if {$baseType eq "CHOICE"} {
+        binary scan [string index $bytes $idx] c tagByte
+        set tagByte [expr {$tagByte & 0xFF}]
+        set comps [dict get $typeDef components]
+        dict for {fieldName fieldDef} $comps {
+            set expectedTag [asn1::get_expected_tag $ast $moduleName $fieldDef]
+            if {$tagByte == $expectedTag} {
+                return [dict create $fieldName [asn1::ber_decode_type $ast $moduleName $fieldDef $bytes idx]]
+            }
+        }
+        error "No matching tag $tagByte in CHOICE"
+    }
+
+    binary scan [string index $bytes $idx] c tagByte
+    set tagByte [expr {$tagByte & 0xFF}]
+    incr idx
+
+    set len [asn1::ber_decode_length $bytes idx]
+    set valBytes [string range $bytes $idx [expr {$idx + $len - 1}]]
+    incr idx $len
+
+    switch $baseType {
+        "INTEGER" { return [asn1::ber_decode_integer $valBytes] }
+        "BOOLEAN" {
+            binary scan [string index $valBytes 0] c b
+            return [expr {($b & 0xFF) != 0}]
+        }
+        "OCTET STRING" { return $valBytes }
+        "SEQUENCE" {
+            set result [dict create]
+            set subIdx 0
+            set comps [dict get $typeDef components]
+            dict for {fieldName fieldDef} $comps {
+                if {$subIdx >= $len} {
+                    if {[dict exists $fieldDef optional] && [dict get $fieldDef optional]} { continue }
+                    if {[dict exists $fieldDef default]} {
+                        dict set result $fieldName [dict get $fieldDef default]
+                        continue
+                    }
+                    error "Missing mandatory field $fieldName"
+                }
+                set fieldVal [asn1::ber_decode_type $ast $moduleName $fieldDef $valBytes subIdx]
+                dict set result $fieldName $fieldVal
+            }
+            return $result
+        }
+    }
 }
