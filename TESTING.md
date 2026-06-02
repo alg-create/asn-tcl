@@ -17,6 +17,9 @@ tclsh tests\ber_constraints.test
 tclsh tests\modules.test
 ```
 
+The full suite also loads `tclmut` from `deps\muttcl\lib` and parses the
+project Tcl sources/tests via `tests\muttcl_integration.test`.
+
 ## Python BER Oracle
 
 For cross-checking BER behavior, this workspace can use Python `asn1tools` as an external oracle.

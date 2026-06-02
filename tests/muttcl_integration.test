@@ -1,0 +1,56 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+lappend auto_path [file join $root deps muttcl lib]
+
+package require asn1
+package require tclmut 0.1
+
+proc projectTclFiles {} {
+    global root testdir
+
+    set files {}
+    foreach pattern {
+        *.tcl
+        nagelfar/*.tcl
+        tests/*.tcl
+        tests/*.test
+    } {
+        foreach file [glob -nocomplain [file join $root {*}[split $pattern /]]] {
+            lappend files [file normalize $file]
+        }
+    }
+
+    return [lsort -unique $files]
+}
+
+tcltest::test muttcl-integration-1.1 {muttcl package loads from deps} -body {
+    package present tclmut
+} -result 0.1
+
+tcltest::test muttcl-integration-1.2 {muttcl parses project Tcl sources and tests} -body {
+    set failures {}
+    set parsed 0
+
+    foreach file [projectTclFiles] {
+        set fp [open $file r]
+        set source [read $fp]
+        close $fp
+
+        if {[catch {::tclmut::parser::parseScript $source -file $file} err]} {
+            lappend failures "[file relative $root $file]: $err"
+            continue
+        }
+        incr parsed
+    }
+
+    if {$failures ne {}} {
+        error [join $failures "\n"]
+    }
+
+    expr {$parsed > 0}
+} -result 1
+
+tcltest::cleanupTests
