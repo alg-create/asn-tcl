@@ -1,0 +1,121 @@
+package require tcltest
+
+set testdir [file dirname [file normalize [info script]]]
+set root [file dirname $testdir]
+lappend auto_path $root
+package require asn1
+
+set schema {
+    AdvancedModule DEFINITIONS IMPLICIT TAGS ::= BEGIN
+        MyInt ::= INTEGER
+        MyBool ::= BOOLEAN
+
+        MySet ::= SET {
+            id INTEGER,
+            active BOOLEAN
+        }
+
+        MyChoice ::= CHOICE {
+            opt1 INTEGER,
+            opt2 BOOLEAN
+        }
+
+        ExplicitChoice ::= [APPLICATION 5] EXPLICIT CHOICE {
+            opt1 INTEGER,
+            opt2 BOOLEAN
+        }
+
+        TaggedInt ::= [PRIVATE 7] IMPLICIT INTEGER
+        ExplicitInt ::= [1] EXPLICIT INTEGER
+        
+        TaggedSequence ::= SEQUENCE {
+            field1 [2] IMPLICIT INTEGER,
+            field2 [3] EXPLICIT BOOLEAN
+        }
+    END
+}
+
+set ast [asn1::parse_str $schema]
+
+# SET tests
+tcltest::test ber-adv-1.1 {Encode SET} -body {
+    set val [dict create id 255 active 0]
+    binary encode hex [asn1::ber_encode $ast AdvancedModule MySet $val]
+} -result "3107020200ff010100"
+
+tcltest::test ber-adv-1.2 {Decode SET} -body {
+    set bytes [binary decode hex "3107020200ff010100"]
+    dict get [asn1::ber_decode $ast AdvancedModule MySet $bytes] value
+} -result {id 255 active 0}
+
+# CHOICE tests
+tcltest::test ber-adv-2.1 {Encode CHOICE (opt1)} -body {
+    set val [dict create opt1 42]
+    binary encode hex [asn1::ber_encode $ast AdvancedModule MyChoice $val]
+} -result "02012a"
+
+tcltest::test ber-adv-2.2 {Decode CHOICE (opt1)} -body {
+    set bytes [binary decode hex "02012a"]
+    dict get [asn1::ber_decode $ast AdvancedModule MyChoice $bytes] value
+} -result {opt1 42}
+
+tcltest::test ber-adv-2.3 {Encode CHOICE (opt2)} -body {
+    set val [dict create opt2 1]
+    binary encode hex [asn1::ber_encode $ast AdvancedModule MyChoice $val]
+} -result "0101ff"
+
+tcltest::test ber-adv-2.4 {Decode CHOICE (opt2)} -body {
+    set bytes [binary decode hex "0101ff"]
+    dict get [asn1::ber_decode $ast AdvancedModule MyChoice $bytes] value
+} -result {opt2 1}
+
+# Explicit Tagged CHOICE
+tcltest::test ber-adv-3.1 {Encode Explicit Tagged CHOICE} -body {
+    set val [dict create opt1 42]
+    binary encode hex [asn1::ber_encode $ast AdvancedModule ExplicitChoice $val]
+} -result "650302012a"
+# APPLICATION 5 (constructed) -> 0x40 | 0x20 | 0x05 = 0x65
+# Length 3
+# Value: 02012a
+
+tcltest::test ber-adv-3.2 {Decode Explicit Tagged CHOICE} -body {
+    set bytes [binary decode hex "650302012a"]
+    dict get [asn1::ber_decode $ast AdvancedModule ExplicitChoice $bytes] value
+} -result {opt1 42}
+
+# Tagged Types
+tcltest::test ber-adv-4.1 {Encode IMPLICIT PRIVATE tag} -body {
+    binary encode hex [asn1::ber_encode $ast AdvancedModule TaggedInt 42]
+} -result "c7012a"
+# PRIVATE 7 -> 0xC0 | 0x07 = 0xC7
+
+tcltest::test ber-adv-4.2 {Decode IMPLICIT PRIVATE tag} -body {
+    set bytes [binary decode hex "c7012a"]
+    dict get [asn1::ber_decode $ast AdvancedModule TaggedInt $bytes] value
+} -result 42
+
+tcltest::test ber-adv-4.3 {Encode EXPLICIT CONTEXT tag} -body {
+    binary encode hex [asn1::ber_encode $ast AdvancedModule ExplicitInt 42]
+} -result "a10302012a"
+# Context-Specific 1 (constructed) -> 0x80 | 0x20 | 0x01 = 0xA1
+
+tcltest::test ber-adv-4.4 {Decode EXPLICIT CONTEXT tag} -body {
+    set bytes [binary decode hex "a10302012a"]
+    dict get [asn1::ber_decode $ast AdvancedModule ExplicitInt $bytes] value
+} -result 42
+
+# Sequence fields with custom tags
+tcltest::test ber-adv-5.1 {Encode TaggedSequence} -body {
+    set val [dict create field1 42 field2 1]
+    binary encode hex [asn1::ber_encode $ast AdvancedModule TaggedSequence $val]
+} -result "300882012aa3030101ff"
+# SEQ (30) Len 08
+#  field1: Context 2 IMPLICIT -> 0x80 | 0x02 = 0x82, Len 1, Val 2A
+#  field2: Context 3 EXPLICIT -> 0x80 | 0x20 | 0x03 = 0xA3, Len 3, Val [01 01 FF]
+
+tcltest::test ber-adv-5.2 {Decode TaggedSequence} -body {
+    set bytes [binary decode hex "300882012aa3030101ff"]
+    dict get [asn1::ber_decode $ast AdvancedModule TaggedSequence $bytes] value
+} -result {field1 42 field2 1}
+
+tcltest::cleanupTests

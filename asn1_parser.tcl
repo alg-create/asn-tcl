@@ -325,6 +325,20 @@ proc asn1::parse {tokens} {
                             } else {
                                 lappend errors "Missing closing brace for CHOICE '$ident'"
                             }
+                        } elseif {$rhsToken eq "SET" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
+                            # Parse SET
+                            set i [expr {$tempIdx + 2}]
+                            set fields [asn1::parse_components tokens i errors]
+                            dict set moduleAst types $ident type "SET"
+                            if {$tagDict ne {}} {
+                                dict set moduleAst types $ident tag $tagDict
+                            }
+                            dict set moduleAst types $ident components $fields
+                            if {$i < $len && [lindex $tokens $i] eq "\}"} {
+                                incr i ;# skip closing brace
+                            } else {
+                                lappend errors "Missing closing brace for SET '$ident'"
+                            }
                         } else {
                             # Simple type assignment
                             set fieldType $rhsToken
@@ -467,9 +481,61 @@ proc asn1::ber_encode {ast moduleName typeName value} {
 
 proc asn1::ber_encode_type {ast moduleName typeDef value} {
     set baseType [dict get $typeDef type]
-    while {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "CHOICE"}} {
-        set typeDef [dict get $ast $moduleName types $baseType]
-        set baseType [dict get $typeDef type]
+
+    set hasTag [dict exists $typeDef tag]
+    if {$hasTag} {
+        set tagDict [dict get $typeDef tag]
+        if {[dict exists $tagDict mode]} {
+            set tagMode [dict get $tagDict mode]
+        } else {
+            set tagMode [dict get $ast $moduleName tagging]
+        }
+        set tagClassStr [dict get $tagDict class]
+        set tagNum [dict get $tagDict number]
+        
+        switch $tagClassStr {
+            "UNIVERSAL" { set tagClass 0x00 }
+            "APPLICATION" { set tagClass 0x40 }
+            "CONTEXT-SPECIFIC" { set tagClass 0x80 }
+            "PRIVATE" { set tagClass 0xC0 }
+        }
+        
+        if {$tagMode eq "EXPLICIT"} {
+            set innerDef $typeDef
+            dict unset innerDef tag
+            set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
+            
+            set tagByte [expr {$tagClass | 0x20 | $tagNum}]
+            set lenBytes [asn1::ber_encode_length [string length $innerBytes]]
+            return [binary format c $tagByte]${lenBytes}${innerBytes}
+        } else {
+            set innerDef $typeDef
+            dict unset innerDef tag
+            
+            # If IMPLICIT on CHOICE, ASN.1 standard dictates it acts as EXPLICIT
+            set tempBase [dict get $innerDef type]
+            while {$tempBase ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+                set tempDef [dict get $ast $moduleName types $tempBase]
+                set tempBase [dict get $tempDef type]
+            }
+            if {$tempBase eq "CHOICE"} {
+                set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
+                set tagByte [expr {$tagClass | 0x20 | $tagNum}]
+                set lenBytes [asn1::ber_encode_length [string length $innerBytes]]
+                return [binary format c $tagByte]${lenBytes}${innerBytes}
+            }
+
+            set innerBytes [asn1::ber_encode_type $ast $moduleName $innerDef $value]
+            binary scan [string index $innerBytes 0] c innerTagByte
+            set constructedBit [expr {$innerTagByte & 0x20}]
+            set tagByte [expr {$tagClass | $constructedBit | $tagNum}]
+            return [binary format c $tagByte][string range $innerBytes 1 end]
+        }
+    }
+
+    if {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+        set aliasDef [dict get $ast $moduleName types $baseType]
+        return [asn1::ber_encode_type $ast $moduleName $aliasDef $value]
     }
 
     set tagNum 0
@@ -486,8 +552,8 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             set tagNum 4
             set valBytes [encoding convertto utf-8 $value]
         }
-        "SEQUENCE" {
-            set tagNum 16
+        "SEQUENCE" - "SET" {
+            set tagNum [expr {$baseType eq "SEQUENCE" ? 16 : 17}]
             set valBytes ""
             set comps [dict get $typeDef components]
             dict for {fieldName fieldDef} $comps {
@@ -506,7 +572,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
     }
 
     set tagByte $tagNum
-    if {$baseType eq "SEQUENCE"} {
+    if {$baseType in {"SEQUENCE" "SET"}} {
         set tagByte [expr {$tagByte | 0x20}]
     }
 
@@ -552,17 +618,70 @@ proc asn1::ber_decode_integer {bytes} {
 }
 
 proc asn1::get_expected_tag {ast moduleName typeDef} {
-    set baseType [dict get $typeDef type]
-    while {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "CHOICE"}} {
-        set typeDef [dict get $ast $moduleName types $baseType]
-        set baseType [dict get $typeDef type]
+    if {[dict exists $typeDef tag]} {
+        set tagDict [dict get $typeDef tag]
+        if {[dict exists $tagDict mode]} {
+            set tagMode [dict get $tagDict mode]
+        } else {
+            set tagMode [dict get $ast $moduleName tagging]
+        }
+        set tagClassStr [dict get $tagDict class]
+        set tagNum [dict get $tagDict number]
+        switch $tagClassStr {
+            "UNIVERSAL" { set tagClass 0x00 }
+            "APPLICATION" { set tagClass 0x40 }
+            "CONTEXT-SPECIFIC" { set tagClass 0x80 }
+            "PRIVATE" { set tagClass 0xC0 }
+        }
+        
+        set innerDef $typeDef
+        dict unset innerDef tag
+        
+        set effectiveMode $tagMode
+        if {$effectiveMode eq "IMPLICIT"} {
+            set tempBase [dict get $innerDef type]
+            while {$tempBase ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+                set tempDef [dict get $ast $moduleName types $tempBase]
+                set tempBase [dict get $tempDef type]
+            }
+            if {$tempBase eq "CHOICE"} {
+                set effectiveMode "EXPLICIT"
+            }
+        }
+        
+        if {$effectiveMode eq "EXPLICIT"} {
+            return [list [expr {$tagClass | 0x20 | $tagNum}]]
+        } else {
+            set innerTags [asn1::get_expected_tag $ast $moduleName $innerDef]
+            set res {}
+            foreach itag $innerTags {
+                set constructedBit [expr {$itag & 0x20}]
+                lappend res [expr {$tagClass | $constructedBit | $tagNum}]
+            }
+            return $res
+        }
     }
+
+    set baseType [dict get $typeDef type]
+    if {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+        set aliasDef [dict get $ast $moduleName types $baseType]
+        return [asn1::get_expected_tag $ast $moduleName $aliasDef]
+    }
+
     switch $baseType {
-        "INTEGER" { return 2 }
-        "BOOLEAN" { return 1 }
-        "OCTET STRING" { return 4 }
-        "SEQUENCE" { return [expr {16 | 0x20}] }
-        "CHOICE" { return -1 }
+        "INTEGER" { return [list 2] }
+        "BOOLEAN" { return [list 1] }
+        "OCTET STRING" { return [list 4] }
+        "SEQUENCE" { return [list [expr {16 | 0x20}]] }
+        "SET" { return [list [expr {17 | 0x20}]] }
+        "CHOICE" {
+            set tags {}
+            set comps [dict get $typeDef components]
+            dict for {fieldName fieldDef} $comps {
+                foreach t [asn1::get_expected_tag $ast $moduleName $fieldDef] { lappend tags $t }
+            }
+            return $tags
+        }
     }
 }
 
@@ -577,29 +696,77 @@ proc asn1::ber_decode {ast moduleName typeName bytes} {
 proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     upvar 1 $idxVar idx
 
-    set baseType [dict get $typeDef type]
-    while {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "CHOICE"}} {
-        set typeDef [dict get $ast $moduleName types $baseType]
-        set baseType [dict get $typeDef type]
-    }
-
-    if {$baseType eq "CHOICE"} {
+    if {[dict exists $typeDef tag]} {
+        set tagDict [dict get $typeDef tag]
+        if {[dict exists $tagDict mode]} {
+            set tagMode [dict get $tagDict mode]
+        } else {
+            set tagMode [dict get $ast $moduleName tagging]
+        }
+        
         binary scan [string index $bytes $idx] c tagByte
         set tagByte [expr {$tagByte & 0xFF}]
+        
+        set expectedTags [asn1::get_expected_tag $ast $moduleName $typeDef]
+        if {$tagByte ni $expectedTags} {
+            error "Expected tag $expectedTags but got $tagByte"
+        }
+        
+        incr idx
+        set len [asn1::ber_decode_length $bytes idx]
+        set valBytes [string range $bytes $idx [expr {$idx + $len - 1}]]
+        incr idx $len
+        
+        set innerDef $typeDef
+        dict unset innerDef tag
+        
+        set effectiveMode $tagMode
+        if {$effectiveMode eq "IMPLICIT"} {
+            set tempBase [dict get $innerDef type]
+            while {$tempBase ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+                set tempDef [dict get $ast $moduleName types $tempBase]
+                set tempBase [dict get $tempDef type]
+            }
+            if {$tempBase eq "CHOICE"} {
+                set effectiveMode "EXPLICIT"
+            }
+        }
+        
+        if {$effectiveMode eq "EXPLICIT"} {
+            set subIdx 0
+            return [asn1::ber_decode_type $ast $moduleName $innerDef $valBytes subIdx]
+        } else {
+            set innerTags [asn1::get_expected_tag $ast $moduleName $innerDef]
+            set fakeTag [lindex $innerTags 0]
+            set fakeTagByte [binary format c $fakeTag]
+            set fakeLenBytes [asn1::ber_encode_length [string length $valBytes]]
+            set fakeBytes ${fakeTagByte}${fakeLenBytes}${valBytes}
+            set subIdx 0
+            return [asn1::ber_decode_type $ast $moduleName $innerDef $fakeBytes subIdx]
+        }
+    }
+
+    set baseType [dict get $typeDef type]
+    if {$baseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+        set aliasDef [dict get $ast $moduleName types $baseType]
+        return [asn1::ber_decode_type $ast $moduleName $aliasDef $bytes idx]
+    }
+
+    binary scan [string index $bytes $idx] c tagByte
+    set tagByte [expr {$tagByte & 0xFF}]
+    
+    if {$baseType eq "CHOICE"} {
         set comps [dict get $typeDef components]
         dict for {fieldName fieldDef} $comps {
-            set expectedTag [asn1::get_expected_tag $ast $moduleName $fieldDef]
-            if {$tagByte == $expectedTag} {
+            set expectedTags [asn1::get_expected_tag $ast $moduleName $fieldDef]
+            if {$tagByte in $expectedTags} {
                 return [dict create $fieldName [asn1::ber_decode_type $ast $moduleName $fieldDef $bytes idx]]
             }
         }
         error "No matching tag $tagByte in CHOICE"
     }
 
-    binary scan [string index $bytes $idx] c tagByte
-    set tagByte [expr {$tagByte & 0xFF}]
     incr idx
-
     set len [asn1::ber_decode_length $bytes idx]
     set valBytes [string range $bytes $idx [expr {$idx + $len - 1}]]
     incr idx $len
@@ -611,7 +778,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             return [expr {($b & 0xFF) != 0}]
         }
         "OCTET STRING" { return $valBytes }
-        "SEQUENCE" {
+        "SEQUENCE" - "SET" {
             set result [dict create]
             set subIdx 0
             set comps [dict get $typeDef components]
