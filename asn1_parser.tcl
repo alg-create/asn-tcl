@@ -2,6 +2,11 @@ package provide asn1 0.2.0
 
 namespace eval asn1 {
     namespace export parse_file parse_files parse_str ber_encode ber_decode ber_encode_value
+    namespace export ber_encode_tag ber_encode_length ber_decode_tag ber_decode_length
+    namespace export ber_encode_tlv ber_decode_tlv ber_wrap_context ber_wrap_application ber_wrap_private
+    namespace export ber_encode_integer_tlv ber_encode_boolean_tlv ber_encode_utf8_string_tlv
+    namespace export ber_encode_null_tlv ber_encode_sequence_tlv ber_encode_set_tlv
+    namespace export ber_read_tlv ber_read_sequence
 }
 
 # Tokenize the ASN.1 text into a list of tokens
@@ -1076,6 +1081,138 @@ proc asn1::ber_decode_tag {bytes idxVar classVar consVar numVar} {
             }
         }
     }
+}
+
+proc asn1::ber_encode_tlv {tagClass constructedBit tagNum valueBytes} {
+    set tagBytes [asn1::ber_encode_tag $tagClass $constructedBit $tagNum]
+    set lenBytes [asn1::ber_encode_length [string length $valueBytes]]
+    return ${tagBytes}${lenBytes}${valueBytes}
+}
+
+proc asn1::ber_encode_integer_tlv {value} {
+    return [asn1::ber_encode_tlv 0x00 0x00 2 [asn1::ber_encode_integer $value]]
+}
+
+proc asn1::ber_encode_boolean_tlv {value} {
+    return [asn1::ber_encode_tlv 0x00 0x00 1 [binary format c [expr {$value ? 0xFF : 0x00}]]]
+}
+
+proc asn1::ber_encode_utf8_string_tlv {value} {
+    return [asn1::ber_encode_tlv 0x00 0x00 12 [encoding convertto utf-8 $value]]
+}
+
+proc asn1::ber_encode_null_tlv {} {
+    return [asn1::ber_encode_tlv 0x00 0x00 5 ""]
+}
+
+proc asn1::ber_encode_sequence_tlv {valueBytes} {
+    return [asn1::ber_encode_tlv 0x00 0x20 16 $valueBytes]
+}
+
+proc asn1::ber_encode_set_tlv {valueBytes} {
+    return [asn1::ber_encode_tlv 0x00 0x20 17 $valueBytes]
+}
+
+proc asn1::ber_decode_tlv {bytes {idx 0}} {
+    set startIdx $idx
+    asn1::ber_decode_tag $bytes idx tagClass constructedBit tagNum
+    set valueStartIdx $idx
+    set len [asn1::ber_decode_length $bytes idx]
+    set valueStartIdx $idx
+    set valueBytes [asn1::extract_ber_value $bytes idx $len]
+    return [dict create \
+        class $tagClass \
+        constructed $constructedBit \
+        number $tagNum \
+        length $len \
+        headerLength [expr {$valueStartIdx - $startIdx}] \
+        value $valueBytes \
+        tlv [string range $bytes $startIdx [expr {$idx - 1}]] \
+        nextIndex $idx]
+}
+
+proc asn1::ber_constructed_bit {constructed} {
+    if {$constructed in {0 32}} {
+        return $constructed
+    }
+    return [expr {$constructed ? 0x20 : 0x00}]
+}
+
+proc asn1::ber_wrap_context {tagNum valueBytes {constructed 1}} {
+    return [asn1::ber_encode_tlv 0x80 [asn1::ber_constructed_bit $constructed] $tagNum $valueBytes]
+}
+
+proc asn1::ber_wrap_application {tagNum valueBytes {constructed 1}} {
+    return [asn1::ber_encode_tlv 0x40 [asn1::ber_constructed_bit $constructed] $tagNum $valueBytes]
+}
+
+proc asn1::ber_wrap_private {tagNum valueBytes {constructed 1}} {
+    return [asn1::ber_encode_tlv 0xC0 [asn1::ber_constructed_bit $constructed] $tagNum $valueBytes]
+}
+
+proc asn1::ber_read_exact {chan count} {
+    set result ""
+    while {[string length $result] < $count} {
+        set chunk [read $chan [expr {$count - [string length $result]}]]
+        if {$chunk eq ""} {
+            error "Unexpected EOF while reading BER TLV"
+        }
+        append result $chunk
+    }
+    return $result
+}
+
+proc asn1::ber_read_tlv {chan} {
+    set tagBytes [asn1::ber_read_exact $chan 1]
+    binary scan [string index $tagBytes 0] c firstTagByte
+    set firstTagByte [expr {$firstTagByte & 0xFF}]
+
+    if {($firstTagByte & 0x1F) == 0x1F} {
+        while {1} {
+            set b [asn1::ber_read_exact $chan 1]
+            append tagBytes $b
+            binary scan $b c tagContinuation
+            if {(($tagContinuation & 0xFF) & 0x80) == 0} {
+                break
+            }
+        }
+    }
+
+    set lenBytes [asn1::ber_read_exact $chan 1]
+    binary scan [string index $lenBytes 0] c firstLenByte
+    set firstLenByte [expr {$firstLenByte & 0xFF}]
+    if {$firstLenByte == 0x80} {
+        error "Indefinite-length channel framing is not supported"
+    }
+
+    if {$firstLenByte < 0x80} {
+        set len $firstLenByte
+    } else {
+        set lenByteCount [expr {$firstLenByte & 0x7F}]
+        if {$lenByteCount == 0} {
+            error "Invalid BER length byte"
+        }
+        set moreLenBytes [asn1::ber_read_exact $chan $lenByteCount]
+        append lenBytes $moreLenBytes
+        set len 0
+        for {set i 0} {$i < $lenByteCount} {incr i} {
+            binary scan [string index $moreLenBytes $i] c b
+            set len [expr {($len << 8) | ($b & 0xFF)}]
+        }
+    }
+
+    set valueBytes [asn1::ber_read_exact $chan $len]
+    return ${tagBytes}${lenBytes}${valueBytes}
+}
+
+proc asn1::ber_read_sequence {chan} {
+    set tlv [asn1::ber_read_tlv $chan]
+    set idx 0
+    asn1::ber_decode_tag $tlv idx tagClass constructedBit tagNum
+    if {$tagClass != 0 || $constructedBit != 0x20 || $tagNum != 16} {
+        error "Expected top-level BER SEQUENCE but got class $tagClass constructed $constructedBit tag $tagNum"
+    }
+    return $tlv
 }
 
 proc asn1::ber_encode_integer {val} {

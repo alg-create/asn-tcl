@@ -27,6 +27,7 @@ Supported BER features include:
 
 - Encode/decode for `INTEGER`, `BOOLEAN`, `ENUMERATED`, `OCTET STRING`, `BIT STRING`, `NULL`, `OBJECT IDENTIFIER`, `UTF8String`
 - Encode/decode for `SEQUENCE`, `SET`, `CHOICE`, `SEQUENCE OF`, `SET OF`
+- Public low-level TLV helpers for tags, lengths, primitive TLVs, constructed TLVs, wrappers, and channel reads
 - Explicit and implicit tags
 - High tag numbers
 - Definite length encoding
@@ -122,6 +123,71 @@ puts [dict get $decoded value]
 ### `asn1::ber_encode_value ast moduleName valueName`
 
 Encodes a parsed ASN.1 value assignment.
+
+## Low-Level BER/TLV Helpers
+
+The package also exposes schema-independent BER helpers for socket protocols and custom framing code.
+
+Tag and length helpers:
+
+```tcl
+asn1::ber_encode_tag $tagClass $constructedBit $tagNumber
+asn1::ber_encode_length $length
+asn1::ber_decode_tag $bytes idx class constructed number
+asn1::ber_decode_length $bytes idx
+```
+
+`tagClass` uses BER class bits:
+
+```tcl
+0x00  ;# UNIVERSAL
+0x40  ;# APPLICATION
+0x80  ;# CONTEXT-SPECIFIC
+0xC0  ;# PRIVATE
+```
+
+`constructedBit` is `0x00` or `0x20`.
+
+Complete TLV helpers:
+
+```tcl
+asn1::ber_encode_tlv $tagClass $constructedBit $tagNumber $valueBytes
+asn1::ber_decode_tlv $bytes ?startIndex?
+```
+
+`ber_decode_tlv` returns a dictionary containing:
+
+```tcl
+class constructed number length headerLength value tlv nextIndex
+```
+
+Convenience encoders:
+
+```tcl
+asn1::ber_encode_integer_tlv 42
+asn1::ber_encode_boolean_tlv 1
+asn1::ber_encode_utf8_string_tlv "hello"
+asn1::ber_encode_null_tlv
+asn1::ber_encode_sequence_tlv $contentBytes
+asn1::ber_encode_set_tlv $contentBytes
+```
+
+Class wrappers:
+
+```tcl
+asn1::ber_wrap_context $tagNumber $valueBytes ?constructed?
+asn1::ber_wrap_application $tagNumber $valueBytes ?constructed?
+asn1::ber_wrap_private $tagNumber $valueBytes ?constructed?
+```
+
+Channel framing helpers:
+
+```tcl
+set tlv [asn1::ber_read_tlv $chan]
+set seq [asn1::ber_read_sequence $chan]
+```
+
+`ber_read_tlv` reads exactly one definite-length top-level BER TLV from a binary Tcl channel. `ber_read_sequence` does the same and verifies that the top-level tag is a universal constructed `SEQUENCE`.
 
 ## AST Shape
 

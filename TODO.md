@@ -8,19 +8,10 @@ Requested must-haves from downstream users, mapped to current project status:
 
 ### Must Have
 
-- Stable public low-level BER/TLV helper API.
-  - Current status: partial/internal.
-  - Existing helpers include `ber_encode_tag`, `ber_encode_length`, `ber_decode_tag`, `ber_decode_length`, integer helpers, and skip/extract helpers.
-  - Needed:
-    - public wrapper names and documented signatures
-    - TLV read helper returning `{tag length value nextIndex}` or similar
-    - public context/application/private wrapper helpers
-    - tests for helper API stability
-- Channel framing helper.
-  - Needed: read one complete top-level BER TLV, usually a `SEQUENCE`, from a Tcl channel/socket and return complete TLV bytes.
-  - Equivalent to legacy `asnGetResponse`.
-  - Should handle short reads and long-form length.
-  - Optional: validate expected top-level tag.
+- Channel framing helper indefinite-length support.
+  - Current status: definite-length `ber_read_tlv` and `ber_read_sequence` are implemented.
+  - Needed only if downstream sockets can send indefinite-length top-level messages.
+  - Would require nested EOC scanning while reading from the channel.
 - `AUTOMATIC TAGS` semantics.
   - Current status: parser stores `AUTOMATIC`, but does not assign automatic context-specific component tags.
   - Needed for SCAPI request/response choices such as `registration`, `notification`, `interaction`.
