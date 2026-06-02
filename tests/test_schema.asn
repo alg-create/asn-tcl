@@ -7,7 +7,9 @@ MyTestModule DEFINITIONS ::= BEGIN
     MySequence ::= SEQUENCE {
         id INTEGER,
         name OCTET STRING,
-        isActive BOOLEAN
+        isActive BOOLEAN,
+        ...,
+        optionalField BOOLEAN OPTIONAL
     }
     
     MyChoice ::= CHOICE {
