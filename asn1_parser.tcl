@@ -226,7 +226,7 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
         } elseif {$fieldType in {"SEQUENCE" "SET" "CHOICE"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "\{"} {
             # Inline nested complex type — parse recursively and register as synthetic type
             set syntheticName "${parentName}_${fieldName}"
-            incr i 2 ;# skip past "{"
+            incr i 2 ;# skip past opening brace
             if {$fieldType eq "CHOICE" || $fieldType eq "SEQUENCE" || $fieldType eq "SET"} {
                 lassign [asn1::parse_components tokens i errors moduleAst $syntheticName] subFields subExtensible subExtensions
                 if {$moduleAstVar ne ""} {
@@ -742,6 +742,50 @@ proc asn1::ber_encode_integer {val} {
     return $bytes
 }
 
+proc asn1::ber_builtin_types {} {
+    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "OBJECT IDENTIFIER" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
+}
+
+proc asn1::ber_encode_oid_subidentifier {val} {
+    if {$val < 0} {
+        error "OBJECT IDENTIFIER arcs must be non-negative"
+    }
+    if {$val == 0} {
+        return [binary format c 0]
+    }
+    set bytes ""
+    set temp $val
+    while {$temp > 0} {
+        set b [expr {$temp & 0x7F}]
+        set temp [expr {$temp >> 7}]
+        if {[string length $bytes] > 0} {
+            set b [expr {$b | 0x80}]
+        }
+        set bytes [binary format c $b]$bytes
+    }
+    return $bytes
+}
+
+proc asn1::ber_encode_oid {value} {
+    if {[llength $value] < 2} {
+        error "OBJECT IDENTIFIER requires at least two arcs"
+    }
+    set first [lindex $value 0]
+    set second [lindex $value 1]
+    if {$first < 0 || $first > 2} {
+        error "OBJECT IDENTIFIER first arc must be 0, 1, or 2"
+    }
+    if {$second < 0 || ($first < 2 && $second > 39)} {
+        error "OBJECT IDENTIFIER second arc is out of range"
+    }
+
+    set bytes [asn1::ber_encode_oid_subidentifier [expr {$first * 40 + $second}]]
+    foreach arc [lrange $value 2 end] {
+        append bytes [asn1::ber_encode_oid_subidentifier $arc]
+    }
+    return $bytes
+}
+
 proc asn1::ber_encode {ast moduleName typeName value} {
     set typeDef [dict get $ast $moduleName types $typeName]
     return [asn1::ber_encode_type $ast $moduleName $typeDef $value]
@@ -757,7 +801,7 @@ proc asn1::ber_encode_value {ast moduleName valueName} {
     if {[dict exists $ast $moduleName types $valType]} {
         set tDef [dict get $ast $moduleName types $valType]
         set resolvedType [dict get $tDef type]
-        while {$resolvedType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"} && [dict exists $ast $moduleName types $resolvedType]} {
+        while {$resolvedType ni [asn1::ber_builtin_types] && [dict exists $ast $moduleName types $resolvedType]} {
             set tDef [dict get $ast $moduleName types $resolvedType]
             set resolvedType [dict get $tDef type]
         }
@@ -820,7 +864,7 @@ proc asn1::resolve_seq_value {ast moduleName seqDef val} {
             set fType [dict get $fDef type]
             # Resolve the field's base type
             set fBaseType $fType
-            while {$fBaseType ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"} && [dict exists $ast $moduleName types $fBaseType]} {
+            while {$fBaseType ni [asn1::ber_builtin_types] && [dict exists $ast $moduleName types $fBaseType]} {
                 set tDef [dict get $ast $moduleName types $fBaseType]
                 set fBaseType [dict get $tDef type]
             }
@@ -867,7 +911,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             
             # If IMPLICIT on CHOICE, ASN.1 standard dictates it acts as EXPLICIT
             set tempBase [dict get $innerDef type]
-            while {$tempBase ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+            while {$tempBase ni [asn1::ber_builtin_types]} {
                 set tempDef [dict get $ast $moduleName types $tempBase]
                 set tempBase [dict get $tempDef type]
             }
@@ -891,7 +935,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         }
     }
 
-    if {$baseType ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+    if {$baseType ni [asn1::ber_builtin_types]} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::ber_encode_type $ast $moduleName $aliasDef $value]
     }
@@ -914,6 +958,10 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             set tagNum 4
             set valBytes [encoding convertto utf-8 $value]
         }
+        "OBJECT IDENTIFIER" {
+            set tagNum 6
+            set valBytes [asn1::ber_encode_oid $value]
+        }
         "SEQUENCE" - "SET" {
             set tagNum [expr {$baseType eq "SEQUENCE" ? 16 : 17}]
             set valBytes ""
@@ -922,6 +970,14 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
                 if {[dict exists $value $fieldName]} {
                     append valBytes [asn1::ber_encode_type $ast $moduleName $fieldDef [dict get $value $fieldName]]
                 }
+            }
+        }
+        "SEQUENCE OF" - "SET OF" {
+            set tagNum [expr {$baseType eq "SEQUENCE OF" ? 16 : 17}]
+            set valBytes ""
+            set elemDef [dict create type [dict get $typeDef elementType]]
+            foreach elem $value {
+                append valBytes [asn1::ber_encode_type $ast $moduleName $elemDef $elem]
             }
         }
         "CHOICE" {
@@ -933,7 +989,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         }
     }
 
-    set tagBytes [asn1::ber_encode_tag 0x00 [expr {$baseType in {"SEQUENCE" "SET"} ? 0x20 : 0x00}] $tagNum]
+    set tagBytes [asn1::ber_encode_tag 0x00 [expr {$baseType in {"SEQUENCE" "SET" "SEQUENCE OF" "SET OF"} ? 0x20 : 0x00}] $tagNum]
     set lenBytes [asn1::ber_encode_length [string length $valBytes]]
     return ${tagBytes}${lenBytes}${valBytes}
 }
@@ -978,6 +1034,40 @@ proc asn1::ber_decode_integer {bytes} {
     return $val
 }
 
+proc asn1::ber_decode_oid_subidentifier {bytes idxVar} {
+    upvar 1 $idxVar idx
+    set val 0
+    while {$idx < [string length $bytes]} {
+        binary scan [string index $bytes $idx] c b
+        set b [expr {$b & 0xFF}]
+        incr idx
+        set val [expr {($val << 7) | ($b & 0x7F)}]
+        if {($b & 0x80) == 0} {
+            return $val
+        }
+    }
+    error "Truncated OBJECT IDENTIFIER subidentifier"
+}
+
+proc asn1::ber_decode_oid {bytes} {
+    if {[string length $bytes] == 0} {
+        error "OBJECT IDENTIFIER value is empty"
+    }
+    set idx 0
+    set firstSubid [asn1::ber_decode_oid_subidentifier $bytes idx]
+    if {$firstSubid < 40} {
+        set arcs [list 0 $firstSubid]
+    } elseif {$firstSubid < 80} {
+        set arcs [list 1 [expr {$firstSubid - 40}]]
+    } else {
+        set arcs [list 2 [expr {$firstSubid - 80}]]
+    }
+    while {$idx < [string length $bytes]} {
+        lappend arcs [asn1::ber_decode_oid_subidentifier $bytes idx]
+    }
+    return $arcs
+}
+
 proc asn1::get_expected_tag {ast moduleName typeDef} {
     if {[dict exists $typeDef tag]} {
         set tagDict [dict get $typeDef tag]
@@ -1001,7 +1091,7 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         set effectiveMode $tagMode
         if {$effectiveMode eq "IMPLICIT"} {
             set tempBase [dict get $innerDef type]
-            while {$tempBase ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+            while {$tempBase ni [asn1::ber_builtin_types]} {
                 set tempDef [dict get $ast $moduleName types $tempBase]
                 set tempBase [dict get $tempDef type]
             }
@@ -1024,7 +1114,7 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
     }
 
     set baseType [dict get $typeDef type]
-    if {$baseType ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+    if {$baseType ni [asn1::ber_builtin_types]} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::get_expected_tag $ast $moduleName $aliasDef]
     }
@@ -1034,8 +1124,11 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         "BOOLEAN" { return [list [list 0 0 1]] }
         "ENUMERATED" { return [list [list 0 0 10]] }
         "OCTET STRING" { return [list [list 0 0 4] [list 0 32 4]] }
+        "OBJECT IDENTIFIER" { return [list [list 0 0 6]] }
         "SEQUENCE" { return [list [list 0 32 16]] }
         "SET" { return [list [list 0 32 17]] }
+        "SEQUENCE OF" { return [list [list 0 32 16]] }
+        "SET OF" { return [list [list 0 32 17]] }
         "CHOICE" {
             set tags {}
             set comps [dict get $typeDef components]
@@ -1123,7 +1216,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         set effectiveMode $tagMode
         if {$effectiveMode eq "IMPLICIT"} {
             set tempBase [dict get $innerDef type]
-            while {$tempBase ni {"INTEGER" "BOOLEAN" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+            while {$tempBase ni [asn1::ber_builtin_types]} {
                 set tempDef [dict get $ast $moduleName types $tempBase]
                 set tempBase [dict get $tempDef type]
             }
@@ -1147,7 +1240,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     }
 
     set baseType [dict get $typeDef type]
-    if {$baseType ni {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "SEQUENCE" "SET" "CHOICE"}} {
+    if {$baseType ni [asn1::ber_builtin_types]} {
         set aliasDef [dict get $ast $moduleName types $baseType]
         return [asn1::ber_decode_type $ast $moduleName $aliasDef $bytes idx]
     }
@@ -1193,6 +1286,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             }
             return $valBytes
         }
+        "OBJECT IDENTIFIER" { return [asn1::ber_decode_oid $valBytes] }
         "SEQUENCE" - "SET" {
             set result [dict create]
             set subIdx 0
@@ -1214,6 +1308,16 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 while {$subIdx < $valLen} {
                     asn1::ber_skip_value $valBytes subIdx
                 }
+            }
+            return $result
+        }
+        "SEQUENCE OF" - "SET OF" {
+            set result {}
+            set subIdx 0
+            set elemDef [dict create type [dict get $typeDef elementType]]
+            set valLen [string length $valBytes]
+            while {$subIdx < $valLen} {
+                lappend result [asn1::ber_decode_type $ast $moduleName $elemDef $valBytes subIdx]
             }
             return $result
         }
