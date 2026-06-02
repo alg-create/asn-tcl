@@ -65,7 +65,7 @@ namespace eval asn1 {
             
             # Match string literals "..."
             if {$ch eq "\""} {
-                if {[regexp -start $i -indices {"[^"]*"} $text matchIdx]} {
+                if {[regexp -start $i -indices "\"\[^\"\]*\"" $text matchIdx]} {
                     if {[lindex $matchIdx 0] == $i} {
                         set endIdx [lindex $matchIdx 1]
                         lappend tokens [string range $text $i $endIdx]
