@@ -1,0 +1,18 @@
+MyTestModule DEFINITIONS ::= BEGIN
+
+    -- This is a test ASN.1 schema
+    
+    MyInteger ::= INTEGER
+    
+    MySequence ::= SEQUENCE {
+        id INTEGER,
+        name OCTET STRING,
+        isActive BOOLEAN
+    }
+    
+    MyChoice ::= CHOICE {
+        opt1 MyInteger,
+        opt2 BOOLEAN
+    }
+
+END
