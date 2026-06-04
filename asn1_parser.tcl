@@ -2014,6 +2014,31 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
 
 # --- BER Decoder ---
 
+proc asn1::format_tag {tag} {
+    if {[llength $tag] != 3} {
+        return $tag
+    }
+    lassign $tag class cons num
+    set classStr ""
+    switch $class {
+        0 { set classStr "UNIVERSAL" }
+        64 { set classStr "APPLICATION" }
+        128 { set classStr "CONTEXT-SPECIFIC" }
+        192 { set classStr "PRIVATE" }
+    }
+    set consStr [expr {$cons == 32 ? "CONSTRUCTED" : "PRIMITIVE"}]
+    return "$classStr $consStr $num"
+}
+
+proc asn1::format_tags {tags} {
+    set res {}
+    foreach tag $tags {
+        lappend res "\[[asn1::format_tag $tag]\]"
+    }
+    return [join $res " or "]
+}
+
+
 proc asn1::ber_decode_length {bytes idxVar} {
     upvar 1 $idxVar idx
     if {$idx >= [string length $bytes]} {
@@ -2335,7 +2360,8 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         
         set expectedTags [asn1::get_expected_tag $ast $moduleName $typeDef]
         if {[lsearch -exact $expectedTags $parsedTag] == -1} {
-            error "Expected tag $expectedTags but got $parsedTag"
+            set errBaseType [dict get $typeDef type]
+            error "Expected tag(s) [asn1::format_tags $expectedTags] (for type $errBaseType) but got tag [asn1::format_tag $parsedTag]"
         }
         
         set len [asn1::ber_decode_length $bytes idx]
@@ -2394,7 +2420,12 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             set tlv [asn1::ber_skip_unknown_extension $bytes idx [string length $bytes]]
             return [dict create _extension $tlv]
         }
-        error "No matching tag $parsedTag in CHOICE"
+        error "No matching tag [asn1::format_tag $parsedTag] in CHOICE"
+    } else {
+        set expectedTags [asn1::get_expected_tag $ast $moduleName $typeDef]
+        if {$expectedTags ne {} && [lsearch -exact $expectedTags $parsedTag] == -1} {
+            error "Expected tag(s) [asn1::format_tags $expectedTags] (for type $baseType) but got tag [asn1::format_tag $parsedTag]"
+        }
     }
 
     set len [asn1::ber_decode_length $bytes idx]
@@ -2464,7 +2495,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                         dict set result $fieldName [asn1::ber_component_default_value $ast $moduleName $fieldDef]
                         continue
                     }
-                    error "Expected field $fieldName tag [asn1::get_expected_tag $ast $moduleName $fieldDef] but got $nextTag"
+                    error "Expected field $fieldName tag [asn1::format_tags [asn1::get_expected_tag $ast $moduleName $fieldDef]] but got tag [asn1::format_tag $nextTag]"
                 }
 
                 set fieldVal [asn1::ber_decode_type $ast $moduleName $fieldDef $valBytes subIdx]
@@ -2489,13 +2520,13 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 set fieldName [asn1::ber_set_find_component $ast $moduleName $comps $seenFields $nextTag]
                 if {$fieldName eq ""} {
                     if {[asn1::ber_set_tag_is_duplicate $ast $moduleName $comps $seenFields $nextTag]} {
-                        error "Duplicate SET field tag $nextTag"
+                        error "Duplicate SET field tag [asn1::format_tag $nextTag]"
                     }
                     if {[asn1::ber_type_is_extensible $typeDef]} {
                         asn1::ber_skip_unknown_extension $valBytes subIdx $valLen
                         continue
                     }
-                    error "Unexpected SET field tag $nextTag"
+                    error "Unexpected SET field tag [asn1::format_tag $nextTag]"
                 }
 
                 set fieldDef [dict get $comps $fieldName]
