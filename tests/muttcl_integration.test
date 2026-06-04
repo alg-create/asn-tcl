@@ -53,4 +53,49 @@ tcltest::test muttcl-integration-1.2 {muttcl parses project Tcl sources and test
     expr {$parsed > 0}
 } -result 1
 
+tcltest::test muttcl-integration-1.3 {muttcl runner mutates disposable target and restores it} -setup {
+    set handle [file tempfile mutationScratch]
+    close $handle
+    file delete $mutationScratch
+    file mkdir $mutationScratch
+
+    set mutationTarget [file join $mutationScratch target.tcl]
+    set mutationTargetSource {set x [expr {1 + 1}]}
+    set out [open $mutationTarget w]
+    puts -nonewline $out $mutationTargetSource
+    close $out
+
+    set mutationTestScript [file join $mutationScratch test.tcl]
+    set mutationTargetEscaped [string map {\\ /} $mutationTarget]
+    set testSource [string map [list @TARGET@ $mutationTargetEscaped] {
+        set handle [open "@TARGET@" r]
+        set data [read $handle]
+        close $handle
+        if {[string match "*+*" $data]} {
+            exit 0
+        }
+        exit 1
+    }]
+    set out [open $mutationTestScript w]
+    puts -nonewline $out $testSource
+    close $out
+} -body {
+    set result [::tclmut::runner::run \
+        $mutationTarget \
+        [list [info nameofexecutable] $mutationTestScript] \
+        -min-timeout-ms 100]
+
+    set mutations [dict get $result mutations]
+    set handle [open $mutationTarget r]
+    set restoredSource [read $handle]
+    close $handle
+
+    list \
+        [dict get $result baselinePassed] \
+        [dict get [lindex $mutations 0] classification] \
+        $restoredSource
+} -cleanup {
+    catch {file delete -force $mutationScratch}
+} -result {1 killed {set x [expr {1 + 1}]}}
+
 tcltest::cleanupTests
