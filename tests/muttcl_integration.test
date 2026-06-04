@@ -112,4 +112,63 @@ tcltest::test muttcl-integration-1.4 {muttcl runner uses copy workspace and pres
     catch {file delete -force $mutationScratch}
 } -result {copy 1 killed {set x [expr {1 + 1}]}}
 
+tcltest::test muttcl-integration-1.5 {muttcl runner reports survived mutant when tests miss behavior} -setup {
+    set handle [file tempfile mutationScratch]
+    close $handle
+    file delete $mutationScratch
+    file mkdir $mutationScratch
+
+    set mutationTarget [file join $mutationScratch target.tcl]
+    set mutationTargetSource {
+        proc addOne {value} {
+            expr {$value + 1}
+        }
+    }
+    set out [open $mutationTarget w]
+    puts -nonewline $out $mutationTargetSource
+    close $out
+
+    set mutationTestScript [file join $mutationScratch test.tcl]
+    set testSource {
+        source target.tcl
+        if {[string is integer -strict [addOne 0]]} {
+            exit 0
+        }
+        exit 1
+    }
+    set out [open $mutationTestScript w]
+    puts -nonewline $out $testSource
+    close $out
+} -body {
+    set result [::tclmut::runner::run \
+        target.tcl \
+        [list [info nameofexecutable] test.tcl] \
+        -workdir $mutationScratch \
+        -copy-root $mutationScratch \
+        -mutators {arithmetic} \
+        -min-timeout-ms 100]
+
+    set summary [dict get $result summary]
+    set mutation [lindex [dict get $result mutations] 0]
+    set handle [open $mutationTarget r]
+    set restoredSource [read $handle]
+    close $handle
+
+    list \
+        [dict get $result workspaceMode] \
+        [dict get $result baselinePassed] \
+        [dict get $summary total] \
+        [dict get $summary survived] \
+        [dict get $mutation original] \
+        [dict get $mutation replacement] \
+        [dict get $mutation classification] \
+        $restoredSource
+} -cleanup {
+    catch {file delete -force $mutationScratch}
+} -result [list copy 1 1 1 + - survived {
+        proc addOne {value} {
+            expr {$value + 1}
+        }
+    }]
+
 tcltest::cleanupTests
