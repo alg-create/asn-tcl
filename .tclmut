@@ -1,0 +1,3 @@
+targets: asn1_parser.tcl
+mutators: comparison, string-comparison, membership, arithmetic, logical
+timeoutMs: 5000

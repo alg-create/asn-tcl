@@ -19,30 +19,37 @@ tclsh tests\modules.test
 
 The full suite also loads `tclmut` from `deps\muttcl\lib` and parses the
 project Tcl sources/tests via `tests\muttcl_integration.test`. That integration
-test also runs TclMut's in-place runner against a disposable fixture to verify
-the project uses the framework API with a list-form test command and restores
-mutated targets.
+test also verifies the project `.tclmut` config and runs TclMut's default
+copy-workspace runner against a disposable fixture. The runner test uses a
+list-form command with relative paths so the test reads the mutated copy rather
+than the original checkout.
 
 ## Mutation Testing
 
 The vendored mutation framework lives in `deps\muttcl`. To list mutation
-candidates for the core parser:
+targets from the project config:
+
+```powershell
+tclsh deps\muttcl\tclmut.tcl targets
+```
+
+To list mutation candidates for the core parser:
 
 ```powershell
 tclsh deps\muttcl\tclmut.tcl mutants asn1_parser.tcl
 ```
 
-To run a full mutation pass, start from a clean worktree because TclMut mutates
-the target file in place and restores it after each candidate:
+To run a full mutation pass, use a relative test command so TclMut's default
+copy-workspace mode tests the mutated copy:
 
 ```powershell
-git status --short
 tclsh deps\muttcl\tclmut.tcl run asn1_parser.tcl "tclsh tests\runtests.tcl"
 ```
 
-`asn1_parser.tcl` currently produces hundreds of operator mutants, so the full
-run is intentionally much slower than the normal test suite. Use it as an
-occasional test-quality audit rather than a default edit-test loop.
+The project `.tclmut` file currently targets `asn1_parser.tcl`, enables all
+supported mutator categories, and sets a fixed mutation timeout. The full run is
+intentionally much slower than the normal test suite, so use it as an occasional
+test-quality audit rather than a default edit-test loop.
 
 When `deps\protocol-specification` is present, the full suite compiles those
 real ASN.1 modules and runs representative BER smoke round-trips via
