@@ -39,17 +39,36 @@ To list mutation candidates for the core parser:
 tclsh deps\muttcl\tclmut.tcl mutants asn1_parser.tcl
 ```
 
-To run a full mutation pass, use a relative test command so TclMut's default
-copy-workspace mode tests the mutated copy:
+For real audits of `asn1_parser.tcl`, use the project wrapper instead of the
+raw `tclmut run` command:
 
 ```powershell
-tclsh deps\muttcl\tclmut.tcl run asn1_parser.tcl "tclsh tests\runtests.tcl"
+tclsh tools\mutation_audit.tcl -progress-file .tmp\mutation_audit_full.log
+```
+
+The wrapper builds a disposable scratch project, mutates the scratch copy of
+`asn1_parser.tcl`, runs `tests\mutation_runtests.tcl`, and writes progress
+before and after each mutant. This makes long-running audits safe to abort and
+easy to inspect while they run.
+
+Watch the log from another PowerShell window:
+
+```powershell
+Get-Content .tmp\mutation_audit_full.log -Wait
+```
+
+Useful focused runs:
+
+```powershell
+tclsh tools\mutation_audit.tcl -mutators arithmetic -progress-file .tmp\mutation_audit_arithmetic.log
+tclsh tools\mutation_audit.tcl -mutators arithmetic -limit 10 -progress-file .tmp\mutation_audit_arithmetic.log
+tclsh tools\mutation_audit.tcl -mutators arithmetic -start 11 -progress-file .tmp\mutation_audit_arithmetic.log
 ```
 
 The project `.tclmut` file currently targets `asn1_parser.tcl`, enables all
-supported mutator categories, and sets a fixed mutation timeout. The full run is
-intentionally much slower than the normal test suite, so use it as an occasional
-test-quality audit rather than a default edit-test loop.
+supported mutator categories, and sets a fixed mutation timeout for raw TclMut
+runs. The full audit is intentionally much slower than the normal test suite, so
+use it as an occasional test-quality audit rather than a default edit-test loop.
 
 When `deps\protocol-specification` is present, the full suite compiles those
 real ASN.1 modules and runs representative BER smoke round-trips via

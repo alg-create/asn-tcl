@@ -53,8 +53,11 @@ TCL-ASN/
 |-- pkgIndex.tcl          # Tcl package index
 |-- README.md
 |-- TESTING.md
+|-- deps/
+|   |-- muttcl/             # Vendored mutation testing framework
 |-- tests/
 |   |-- runtests.tcl
+|   |-- mutation_runtests.tcl
 |   |-- syntax.test
 |   |-- modules.test
 |   |-- ber.test
@@ -63,7 +66,9 @@ TCL-ASN/
 |   |-- new_types.test
 |   |-- extensibility.test
 |   |-- modules/
-|       |-- *.asn
+|   |   |-- *.asn
+|-- tools/
+|   |-- mutation_audit.tcl  # Progress-logging mutation audit wrapper
 ```
 
 ## API
@@ -294,3 +299,11 @@ tclsh tests\runtests.tcl
 ```
 
 Python `asn1tools` can also be used as a BER oracle for selected cases. See [TESTING.md](TESTING.md) for setup and usage.
+
+Mutation testing uses the vendored `muttcl` framework. For real audits, prefer
+the project wrapper because it mutates a scratch copy and writes visible
+progress to `.tmp`:
+
+```powershell
+tclsh tools\mutation_audit.tcl -progress-file .tmp\mutation_audit_full.log
+```
