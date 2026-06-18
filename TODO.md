@@ -53,28 +53,10 @@ Requested must-haves from downstream users, mapped to current project status:
 
 ## Parser Syntax
 
-- Replace remaining ad hoc top-level type parsing branches with the shared `parse_type` path.
-  - `SEQUENCE OF` and `SET OF` top-level assignments now use `parse_type`; structured `SEQUENCE`/`SET`/`CHOICE` and `ENUMERATED` still have explicit branches.
-- Remove `parse_components_legacy` after the active parser path is fully cleaned up.
-- Add `COMPONENTS OF` support for `SEQUENCE` and `SET`.
-- Add extension addition group syntax:
-  - `[[ ... ]]`
-  - extension addition version markers
-- Improve tokenizer coverage:
-  - binary strings: `'0101'B`
-  - hex strings: `'0A3F'H`
-  - escaped/doubled quotes in character strings
-  - better errors for unknown characters instead of silent skipping
-- Add object identifier value syntax:
-  - `{ iso member-body us ... }`
-  - named arcs
-  - mixed named/numeric arcs
-- Add more built-in type syntax:
-  - `REAL`
-  - `RELATIVE-OID`
-  - `EXTERNAL`
-  - `EMBEDDED PDV`
-  - time-related types if needed
+- Preserve extension addition group and version-marker metadata if callers need it.
+  - The parser accepts `[[ ... ]]` and numeric version markers, and stores the contained fields as extension additions.
+- Add broader object identifier value resolution later.
+  - Current support covers numeric arcs, named numeric arcs, and a small set of common named arcs.
 - Add object class / information object syntax later:
   - `CLASS`
   - `WITH SYNTAX`

@@ -53,6 +53,44 @@ set syntaxSchema {
 
 set syntaxAst [asn1::parse_str $syntaxSchema]
 
+set componentSyntaxSchema {
+    ComponentSyntax DEFINITIONS IMPLICIT TAGS ::= BEGIN
+        Base ::= SEQUENCE {
+            id [0] INTEGER,
+            active [1] BOOLEAN OPTIONAL
+        }
+
+        Extended ::= SEQUENCE {
+            prefix [2] UTF8String,
+            COMPONENTS OF Base,
+            count [3] INTEGER,
+            ...,
+            [[ 2: note [4] UTF8String OPTIONAL ]]
+        }
+
+        BaseSet ::= SET {
+            id [0] INTEGER,
+            active [1] BOOLEAN OPTIONAL
+        }
+
+        ExtendedSet ::= SET {
+            COMPONENTS OF BaseSet,
+            note [2] UTF8String OPTIONAL
+        }
+
+        Builtins ::= SEQUENCE {
+            real REAL,
+            relative RELATIVE-OID,
+            external EXTERNAL,
+            embedded EMBEDDED PDV,
+            utc UTCTime,
+            generalized GeneralizedTime
+        }
+    END
+}
+
+set componentSyntaxAst [asn1::parse_str $componentSyntaxSchema]
+
 tcltest::test syntax-1.1 {EXPORTS symbols are parsed} -body {
     dict get $syntaxAst SyntaxModule exports
 } -result {PublicInt Flags Nothing}
@@ -120,6 +158,45 @@ tcltest::test syntax-2.8 {Tagged OPTIONAL component can carry constraint} -body 
 tcltest::test syntax-2.9 {DEFAULT component can carry constraint} -body {
     dict get $syntaxAst SyntaxModule types ConstrainedOptions components count
 } -result {type INTEGER constraints {RANGE {0 10}} default 3}
+
+tcltest::test syntax-3.1 {COMPONENTS OF preserves root component order} -body {
+    dict get $componentSyntaxAst ComponentSyntax types Extended componentOrder
+} -result {{field prefix} {componentsOf Base} {field count}}
+
+tcltest::test syntax-3.2 {COMPONENTS OF root fields stay in components dict} -body {
+    dict keys [dict get $componentSyntaxAst ComponentSyntax types Extended components]
+} -result {prefix count}
+
+tcltest::test syntax-3.3 {Extension addition group fields are parsed} -body {
+    dict get $componentSyntaxAst ComponentSyntax types Extended extensionAdditions
+} -result {note {type UTF8String tag {class CONTEXT-SPECIFIC number 4} optional true}}
+
+tcltest::test syntax-3.4 {COMPONENTS OF participates in SEQUENCE BER roundtrip} -body {
+    set value [dict create prefix hi id 7 active 1 count 3 note ok]
+    set encoded [asn1::ber_encode $componentSyntaxAst ComponentSyntax Extended $value]
+    dict get [asn1::ber_decode $componentSyntaxAst ComponentSyntax Extended $encoded] value
+} -result {prefix hi id 7 active 1 count 3 note ok}
+
+tcltest::test syntax-3.5 {COMPONENTS OF participates in SET BER roundtrip} -body {
+    set value [dict create id 9 active 0 note ok]
+    set encoded [asn1::ber_encode $componentSyntaxAst ComponentSyntax ExtendedSet $value]
+    dict get [asn1::ber_decode $componentSyntaxAst ComponentSyntax ExtendedSet $encoded] value
+} -result {id 9 active 0 note ok}
+
+tcltest::test syntax-3.6 {Additional built-in type syntax is parsed} -body {
+    list \
+        [dict get $componentSyntaxAst ComponentSyntax types Builtins components real type] \
+        [dict get $componentSyntaxAst ComponentSyntax types Builtins components relative type] \
+        [dict get $componentSyntaxAst ComponentSyntax types Builtins components external type] \
+        [dict get $componentSyntaxAst ComponentSyntax types Builtins components embedded type] \
+        [dict get $componentSyntaxAst ComponentSyntax types Builtins components utc type] \
+        [dict get $componentSyntaxAst ComponentSyntax types Builtins components generalized type]
+} -result {REAL RELATIVE-OID EXTERNAL {EMBEDDED PDV} UTCTime GeneralizedTime}
+
+tcltest::test syntax-3.7 {Tokenizer reports unknown characters} -body {
+    catch {asn1::tokenize {Bad DEFINITIONS ::= BEGIN nope @ END}} msg
+    string match {*Unknown character '@'*} $msg
+} -result 1
 
 tcltest::test syntax-invariant-1.1 {Valid parser AST satisfies invariants} -body {
     expr {[asn1::validate_ast $syntaxAst] eq $syntaxAst}

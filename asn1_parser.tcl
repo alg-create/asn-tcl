@@ -54,9 +54,67 @@ proc asn1::tokenize {text} {
         }
 
         # Match punctuation (excluding dot, handled above)
-        if {[string first $ch "{}()\[\],;|"] != -1} {
+        if {[string first $ch "{}()\[\],;|:"] != -1} {
             lappend tokens $ch
             incr i
+            continue
+        }
+
+        # Match binary and hex string literals, e.g. '0101'B and '0A3F'H.
+        if {$ch eq "'"} {
+            set start $i
+            incr i
+            set literal ""
+            while {$i < $length && [string index $text $i] ne "'"} {
+                append literal [string index $text $i]
+                incr i
+            }
+            if {$i >= $length} {
+                error "Unterminated ASN.1 binary/hex string literal at index $start"
+            }
+            incr i
+            if {$i >= $length || [string toupper [string index $text $i]] ni {"B" "H"}} {
+                error "ASN.1 binary/hex string literal at index $start must end with B or H"
+            }
+            set suffix [string toupper [string index $text $i]]
+            if {$suffix eq "B" && ![regexp {^[01[:space:]]*$} $literal]} {
+                error "Invalid binary string literal at index $start"
+            }
+            if {$suffix eq "H" && ![regexp {^[0-9A-Fa-f[:space:]]*$} $literal]} {
+                error "Invalid hex string literal at index $start"
+            }
+            lappend tokens "'$literal'$suffix"
+            incr i
+            continue
+        }
+
+        # Match string literals, including ASN.1 doubled quotes and
+        # backslash-escaped quote characters.
+        if {$ch eq "\""} {
+            set start $i
+            incr i
+            set closed 0
+            while {$i < $length} {
+                set curr [string index $text $i]
+                if {$curr eq "\\"} {
+                    incr i 2
+                    continue
+                }
+                if {$curr eq "\""} {
+                    if {$i + 1 < $length && [string index $text [expr {$i+1}]] eq "\""} {
+                        incr i 2
+                        continue
+                    }
+                    incr i
+                    set closed 1
+                    break
+                }
+                incr i
+            }
+            if {!$closed} {
+                error "Unterminated ASN.1 character string literal at index $start"
+            }
+            lappend tokens [string range $text $start [expr {$i - 1}]]
             continue
         }
 
@@ -70,20 +128,7 @@ proc asn1::tokenize {text} {
             }
         }
 
-        # Match string literals "..."
-        if {$ch eq "\""} {
-            if {[regexp -start $i -indices "\"\[^\"\]*\"" $text matchIdx]} {
-                if {[lindex $matchIdx 0] == $i} {
-                    set endIdx [lindex $matchIdx 1]
-                    lappend tokens [string range $text $i $endIdx]
-                    set i [expr {$endIdx + 1}]
-                    continue
-                }
-            }
-        }
-
-        # Unrecognized character, just skip
-        incr i
+        error "Unknown character '$ch' at index $i"
     }
 
     return $tokens
@@ -327,6 +372,9 @@ proc asn1::parse_type_name {tokensVar indexVar} {
     } elseif {$typeName eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
         set typeName "OBJECT IDENTIFIER"
         incr i 2
+    } elseif {$typeName eq "EMBEDDED" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "PDV"} {
+        set typeName "EMBEDDED PDV"
+        incr i 2
     } else {
         incr i
     }
@@ -336,9 +384,365 @@ proc asn1::parse_type_name {tokensVar indexVar} {
 
 proc asn1::strip_string_literal {value} {
     if {[string length $value] >= 2 && [string index $value 0] eq "\"" && [string index $value end] eq "\""} {
-        return [string range $value 1 end-1]
+        set inner [string range $value 1 end-1]
+        set result ""
+        set i 0
+        set len [string length $inner]
+        while {$i < $len} {
+            set ch [string index $inner $i]
+            if {$ch eq "\"" && $i + 1 < $len && [string index $inner [expr {$i+1}]] eq "\""} {
+                append result "\""
+                incr i 2
+                continue
+            }
+            if {$ch eq "\\" && $i + 1 < $len} {
+                append result [string index $inner [expr {$i+1}]]
+                incr i 2
+                continue
+            }
+            append result $ch
+            incr i
+        }
+        return $result
     }
     return $value
+}
+
+proc asn1::decode_binary_string_literal {token} {
+    if {![regexp {^'([01[:space:]]*)'B$} $token _ bits]} {
+        error "Invalid binary string literal '$token'"
+    }
+    regsub -all {[[:space:]]} $bits "" bits
+    set bitLength [string length $bits]
+    set bytes ""
+    for {set i 0} {$i < $bitLength} {incr i 8} {
+        set chunk [string range $bits $i [expr {$i + 7}]]
+        set padded [format %-8s $chunk]
+        regsub -all { } $padded 0 padded
+        scan $padded %b value
+        append bytes [binary format c $value]
+    }
+    return [list $bytes $bitLength]
+}
+
+proc asn1::decode_hex_string_literal {token} {
+    if {![regexp {^'([0-9A-Fa-f[:space:]]*)'H$} $token _ hex]} {
+        error "Invalid hex string literal '$token'"
+    }
+    regsub -all {[[:space:]]} $hex "" hex
+    if {[expr {[string length $hex] % 2}] == 1} {
+        append hex 0
+    }
+    return [binary decode hex $hex]
+}
+
+proc asn1::oid_named_arc_number {name} {
+    set arcMap [dict create \
+        itu-t 0 \
+        ccitt 0 \
+        iso 1 \
+        joint-iso-itu-t 2 \
+        joint-iso-ccitt 2 \
+        standard 0 \
+        registration-authority 1 \
+        member-body 2 \
+        identified-organization 3 \
+        org 3 \
+        dod 6 \
+        internet 1 \
+        directory 1 \
+        mgmt 2 \
+        experimental 3 \
+        private 4 \
+        security 5 \
+        snmpV2 6 \
+        mail 7 \
+        enterprises 1 \
+        us 840]
+    if {[dict exists $arcMap $name]} {
+        return [dict get $arcMap $name]
+    }
+    return ""
+}
+
+proc asn1::parse_oid_value {tokensVar indexVar errorsVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    set len [llength $tokens]
+    set arcs {}
+
+    if {$i >= $len || [lindex $tokens $i] ne "\{"} {
+        return $arcs
+    }
+    incr i
+
+    while {$i < $len && [lindex $tokens $i] ne "\}"} {
+        set arcToken [lindex $tokens $i]
+        if {$arcToken eq ","} {
+            incr i
+            continue
+        }
+        incr i
+
+        if {$i < $len && [lindex $tokens $i] eq "("} {
+            incr i
+            if {$i < $len} {
+                lappend arcs [lindex $tokens $i]
+                incr i
+            } else {
+                lappend errors "Missing numeric value for OBJECT IDENTIFIER arc '$arcToken'"
+                break
+            }
+            if {$i < $len && [lindex $tokens $i] eq ")"} {
+                incr i
+            } else {
+                lappend errors "Missing closing parenthesis for OBJECT IDENTIFIER arc '$arcToken'"
+                break
+            }
+            continue
+        }
+
+        if {[string is integer -strict $arcToken]} {
+            lappend arcs $arcToken
+            continue
+        }
+
+        set namedArc [asn1::oid_named_arc_number $arcToken]
+        if {$namedArc ne ""} {
+            lappend arcs $namedArc
+        } else {
+            lappend errors "Unknown OBJECT IDENTIFIER arc '$arcToken' requires an explicit numeric value"
+            lappend arcs $arcToken
+        }
+    }
+
+    if {$i < $len && [lindex $tokens $i] eq "\}"} {
+        incr i
+    } else {
+        lappend errors "Missing closing brace for OBJECT IDENTIFIER value"
+    }
+
+    return $arcs
+}
+
+proc asn1::parse_resolve_base_type {moduleAst typeName} {
+    set seen [dict create]
+    set baseType $typeName
+    while {[dict exists $moduleAst types $baseType] && ![dict exists $seen $baseType]} {
+        dict set seen $baseType true
+        set typeDef [dict get $moduleAst types $baseType]
+        if {![dict exists $typeDef type]} {
+            break
+        }
+        set baseType [dict get $typeDef type]
+    }
+    return $baseType
+}
+
+proc asn1::parse_string_value_literal {token baseType errorsVar} {
+    upvar 1 $errorsVar errors
+
+    if {[regexp {^'[01[:space:]]*'B$} $token]} {
+        set bitValue [asn1::decode_binary_string_literal $token]
+        if {$baseType eq "BIT STRING"} {
+            return $bitValue
+        }
+        if {$baseType eq "OCTET STRING"} {
+            set bitLength [lindex $bitValue 1]
+            if {[expr {$bitLength % 8}] != 0} {
+                lappend errors "OCTET STRING binary literal must contain a whole number of octets"
+            }
+            return [lindex $bitValue 0]
+        }
+        return $token
+    }
+
+    if {[regexp {^'[0-9A-Fa-f[:space:]]*'H$} $token]} {
+        set bytes [asn1::decode_hex_string_literal $token]
+        if {$baseType eq "BIT STRING"} {
+            regsub -all {[[:space:]]} [string range $token 1 end-2] "" hex
+            return [list $bytes [expr {[string length $hex] * 4}]]
+        }
+        if {$baseType eq "OCTET STRING"} {
+            return $bytes
+        }
+        return $token
+    }
+
+    return [asn1::strip_string_literal $token]
+}
+
+proc asn1::parse_sequence_value {tokensVar indexVar errorsVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    set len [llength $tokens]
+    set seqVal [dict create]
+
+    if {$i >= $len || [lindex $tokens $i] ne "\{"} {
+        return $seqVal
+    }
+    incr i
+
+    while {$i < $len && [lindex $tokens $i] ne "\}"} {
+        set fieldName [lindex $tokens $i]
+        incr i
+        if {$i < $len && [lindex $tokens $i] eq ":"} {
+            incr i
+        }
+        if {$i < $len && [lindex $tokens $i] ni {"," "\}"}} {
+            dict set seqVal $fieldName [asn1::parse_any_value_literal tokens i errors]
+        } else {
+            lappend errors "Missing value for field '$fieldName' in value assignment"
+            break
+        }
+        if {$i < $len && [lindex $tokens $i] eq ","} {
+            incr i
+        }
+    }
+
+    if {$i < $len && [lindex $tokens $i] eq "\}"} {
+        incr i
+    } else {
+        lappend errors "Missing closing brace for value assignment"
+    }
+
+    return $seqVal
+}
+
+proc asn1::parse_any_value_literal {tokensVar indexVar errorsVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    set len [llength $tokens]
+
+    if {$i >= $len} {
+        lappend errors "Missing value in value assignment"
+        return ""
+    }
+
+    if {[lindex $tokens $i] eq "\{"} {
+        return [asn1::parse_sequence_value tokens i errors]
+    }
+
+    set first [lindex $tokens $i]
+    incr i
+    if {$i < $len && [lindex $tokens $i] eq ":"} {
+        incr i
+        return [dict create $first [asn1::parse_any_value_literal tokens i errors]]
+    }
+    return [asn1::strip_string_literal $first]
+}
+
+proc asn1::parse_value_literal {tokensVar indexVar errorsVar moduleAstVar typeName} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    upvar 1 $moduleAstVar moduleAst
+    set len [llength $tokens]
+
+    if {$i >= $len} {
+        lappend errors "Missing value for assignment of type '$typeName'"
+        return ""
+    }
+
+    set baseType [asn1::parse_resolve_base_type $moduleAst $typeName]
+    if {[lindex $tokens $i] eq "\{"} {
+        if {$baseType eq "OBJECT IDENTIFIER"} {
+            return [asn1::parse_oid_value tokens i errors]
+        }
+        return [asn1::parse_sequence_value tokens i errors]
+    }
+
+    set value [asn1::parse_string_value_literal [lindex $tokens $i] $baseType errors]
+    incr i
+    return $value
+}
+
+proc asn1::parse_enumerated_values {tokensVar indexVar errorsVar} {
+    upvar 1 $tokensVar tokens
+    upvar 1 $indexVar i
+    upvar 1 $errorsVar errors
+    set len [llength $tokens]
+    set vals [dict create]
+    set extVals [dict create]
+    set extensible 0
+    set inExtensions 0
+
+    if {$i >= $len || [lindex $tokens $i] ne "\{"} {
+        lappend errors "Missing opening brace for ENUMERATED"
+        return [list $vals $extensible $extVals]
+    }
+    incr i
+
+    while {$i < $len && [lindex $tokens $i] ne "\}"} {
+        if {[lindex $tokens $i] eq "..."} {
+            set extensible 1
+            set inExtensions 1
+            incr i
+            if {$i < $len && [lindex $tokens $i] eq ","} {
+                incr i
+            }
+            continue
+        }
+
+        set enumName [lindex $tokens $i]
+        incr i
+        set enumVal ""
+        if {$i < $len && [lindex $tokens $i] eq "("} {
+            incr i
+            if {$i < $len} {
+                set enumVal [lindex $tokens $i]
+                incr i
+            } else {
+                lappend errors "Missing value for ENUMERATED item '$enumName'"
+                break
+            }
+            if {$i < $len && [lindex $tokens $i] eq ")"} {
+                incr i
+            } else {
+                lappend errors "Missing closing parenthesis for ENUMERATED item '$enumName'"
+                break
+            }
+        }
+
+        if {$inExtensions} {
+            dict set extVals $enumName $enumVal
+        } else {
+            dict set vals $enumName $enumVal
+        }
+        if {$i < $len && [lindex $tokens $i] eq ","} {
+            incr i
+        }
+    }
+
+    if {$i < $len && [lindex $tokens $i] eq "\}"} {
+        incr i
+    } else {
+        lappend errors "Missing closing brace for ENUMERATED"
+    }
+
+    return [list $vals $extensible $extVals]
+}
+
+proc asn1::component_order_has_components_of {order} {
+    foreach entry $order {
+        if {[lindex $entry 0] eq "componentsOf"} {
+            return 1
+        }
+    }
+    return 0
+}
+
+proc asn1::maybe_set_component_order {typeInfoVar order extensionOrder} {
+    upvar 1 $typeInfoVar typeInfo
+    if {[asn1::component_order_has_components_of $order]} {
+        dict set typeInfo componentOrder $order
+    }
+    if {[asn1::component_order_has_components_of $extensionOrder]} {
+        dict set typeInfo extensionAdditionOrder $extensionOrder
+    }
 }
 
 proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""} {fieldName ""}} {
@@ -361,19 +765,27 @@ proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentNam
         incr i
         set elemToken [lindex $tokens $i]
         if {$elemToken in {"SEQUENCE" "SET" "CHOICE"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "\{"} {
-            if {$moduleAstVar eq "" || $parentName eq "" || $fieldName eq ""} {
-                lappend errors "$ofType OF inline element type requires a parent type name and field name"
+            if {$moduleAstVar eq "" || $parentName eq ""} {
+                lappend errors "$ofType OF inline element type requires a parent type name"
                 return [dict create type "$ofType OF" elementType $elemToken]
             }
-            set elemType "${parentName}_${fieldName}_item"
-            incr i 2
-            lassign [asn1::parse_components tokens i errors moduleAst $elemType] subFields subExtensible subExtensions
-            dict set moduleAst types $elemType type $elemToken
-            dict set moduleAst types $elemType components $subFields
-            if {$subExtensible} {
-                dict set moduleAst types $elemType extensible 1
-                dict set moduleAst types $elemType extensionAdditions $subExtensions
+            set elemNamePart $fieldName
+            if {$elemNamePart eq ""} {
+                set elemNamePart "item"
             }
+            set elemType "${parentName}_${elemNamePart}"
+            if {$fieldName ne ""} {
+                append elemType "_item"
+            }
+            incr i 2
+            lassign [asn1::parse_components tokens i errors moduleAst $elemType] subFields subExtensible subExtensions subOrder subExtensionOrder
+            set elemDef [dict create type $elemToken components $subFields]
+            if {$subExtensible} {
+                dict set elemDef extensible 1
+                dict set elemDef extensionAdditions $subExtensions
+            }
+            asn1::maybe_set_component_order elemDef $subOrder $subExtensionOrder
+            dict set moduleAst types $elemType $elemDef
             if {$i < $len && [lindex $tokens $i] eq "\}"} {
                 incr i
             } else {
@@ -384,25 +796,48 @@ proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentNam
         }
         set typeInfo [dict create type "$ofType OF" elementType $elemType]
     } elseif {$typeName in {"SEQUENCE" "SET" "CHOICE"} && $i < $len && [lindex $tokens $i] eq "\{"} {
-        if {$moduleAstVar eq "" || $parentName eq "" || $fieldName eq ""} {
-            lappend errors "Inline type '$typeName' requires a parent type name and field name"
-            return [dict create type $typeName]
-        }
-        set syntheticName "${parentName}_${fieldName}"
         incr i
-        lassign [asn1::parse_components tokens i errors moduleAst $syntheticName] subFields subExtensible subExtensions
-        dict set moduleAst types $syntheticName type $typeName
-        dict set moduleAst types $syntheticName components $subFields
-        if {$subExtensible} {
-            dict set moduleAst types $syntheticName extensible 1
-            dict set moduleAst types $syntheticName extensionAdditions $subExtensions
-        }
-        if {$i < $len && [lindex $tokens $i] eq "\}"} {
-            incr i
+        if {$moduleAstVar ne "" && $parentName ne "" && $fieldName eq ""} {
+            lassign [asn1::parse_components tokens i errors moduleAst $parentName] subFields subExtensible subExtensions subOrder subExtensionOrder
+            set typeInfo [dict create type $typeName components $subFields]
+            if {$subExtensible} {
+                dict set typeInfo extensible 1
+                dict set typeInfo extensionAdditions $subExtensions
+            }
+            asn1::maybe_set_component_order typeInfo $subOrder $subExtensionOrder
+            if {$i < $len && [lindex $tokens $i] eq "\}"} {
+                incr i
+            } else {
+                lappend errors "Missing closing brace for $typeName '$parentName'"
+            }
         } else {
-            lappend errors "Missing closing brace for inline $typeName '$syntheticName'"
+            if {$moduleAstVar eq "" || $parentName eq "" || $fieldName eq ""} {
+                lappend errors "Inline type '$typeName' requires a parent type name and field name"
+                return [dict create type $typeName]
+            }
+            set syntheticName "${parentName}_${fieldName}"
+            lassign [asn1::parse_components tokens i errors moduleAst $syntheticName] subFields subExtensible subExtensions subOrder subExtensionOrder
+            set syntheticDef [dict create type $typeName components $subFields]
+            if {$subExtensible} {
+                dict set syntheticDef extensible 1
+                dict set syntheticDef extensionAdditions $subExtensions
+            }
+            asn1::maybe_set_component_order syntheticDef $subOrder $subExtensionOrder
+            dict set moduleAst types $syntheticName $syntheticDef
+            if {$i < $len && [lindex $tokens $i] eq "\}"} {
+                incr i
+            } else {
+                lappend errors "Missing closing brace for inline $typeName '$syntheticName'"
+            }
+            set typeInfo [dict create type $syntheticName]
         }
-        set typeInfo [dict create type $syntheticName]
+    } elseif {$typeName eq "ENUMERATED" && $i < $len && [lindex $tokens $i] eq "\{"} {
+        lassign [asn1::parse_enumerated_values tokens i errors] enumValues enumExtensible enumExtensions
+        set typeInfo [dict create type "ENUMERATED" values $enumValues]
+        if {$enumExtensible} {
+            dict set typeInfo extensible 1
+            dict set typeInfo extensionAdditions $enumExtensions
+        }
     } else {
         set typeInfo [dict create type $typeName]
     }
@@ -430,142 +865,8 @@ proc asn1::parse_type {tokensVar indexVar errorsVar {moduleAstVar ""} {parentNam
 }
 
 
-# Parse the components (fields) inside a SEQUENCE or CHOICE block.
-# Reads tokens from the current index until closing brace.
-# Handles extension markers (...), OPTIONAL, DEFAULT, tags, and
-# multi-word types (OCTET STRING, BIT STRING).
-# Appends any errors to the errorsVar list in the caller.
-proc asn1::parse_components_legacy {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""}} {
-    upvar 1 $tokensVar tokens
-    upvar 1 $indexVar i
-    upvar 1 $errorsVar errors
-    if {$moduleAstVar ne ""} {
-        upvar 1 $moduleAstVar moduleAst
-    }
-    set len [llength $tokens]
-    set fields [dict create]
-    set extensions [dict create]
-    set extensible 0
-    set inExtensions 0
-
-    while {$i < $len && [lindex $tokens $i] ne "\}"} {
-        # Skip extension markers
-        if {[lindex $tokens $i] eq "..."} {
-            set extensible 1
-            set inExtensions 1
-            incr i
-            if {$i < $len && [lindex $tokens $i] eq ","} {
-                incr i
-            }
-            continue
-        }
-
-        set fieldName [lindex $tokens $i]
-        incr i
-
-        if {$i >= $len || [lindex $tokens $i] eq "\}"} {
-            lappend errors "Unexpected end of component list after field name '$fieldName'"
-            break
-        }
-
-        # Check for optional tag on the member/component
-        set memberTag [asn1::parse_tag_optional tokens i]
-
-        if {$i >= $len || [lindex $tokens $i] eq "\}"} {
-            lappend errors "Missing type for field '$fieldName'"
-            break
-        }
-
-        set fieldType [lindex $tokens $i]
-
-        # Handle SEQUENCE OF / SET OF
-        if {$fieldType in {"SEQUENCE" "SET"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "OF"} {
-            set ofType $fieldType
-            incr i 2 ;# skip past "OF"
-            # Read the element type
-            set elemType [lindex $tokens $i]
-            if {$elemType in {"OCTET" "BIT"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "STRING"} {
-                set elemType "$elemType STRING"
-                incr i
-            } elseif {$elemType eq "OBJECT" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "IDENTIFIER"} {
-                set elemType "OBJECT IDENTIFIER"
-                incr i
-            }
-            set fieldInfo [dict create type "$ofType OF" elementType $elemType]
-            if {$memberTag ne {}} {
-                dict set fieldInfo tag $memberTag
-            }
-            incr i
-        } elseif {$fieldType in {"SEQUENCE" "SET" "CHOICE"} && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "\{"} {
-            # Inline nested complex type — parse recursively and register as synthetic type
-            set syntheticName "${parentName}_${fieldName}"
-            incr i 2 ;# skip past opening brace
-            if {$fieldType eq "CHOICE" || $fieldType eq "SEQUENCE" || $fieldType eq "SET"} {
-                lassign [asn1::parse_components tokens i errors moduleAst $syntheticName] subFields subExtensible subExtensions
-                if {$moduleAstVar ne ""} {
-                    dict set moduleAst types $syntheticName type $fieldType
-                    dict set moduleAst types $syntheticName components $subFields
-                    if {$subExtensible} {
-                        dict set moduleAst types $syntheticName extensible 1
-                        dict set moduleAst types $syntheticName extensionAdditions $subExtensions
-                    }
-                }
-            }
-            if {$i < $len && [lindex $tokens $i] eq "\}"} {
-                incr i ;# skip closing brace
-            }
-            set fieldInfo [dict create type $syntheticName]
-            if {$memberTag ne {}} {
-                dict set fieldInfo tag $memberTag
-            }
-        } else {
-            set fieldInfo [dict create type $fieldType]
-            if {$memberTag ne {}} {
-                dict set fieldInfo tag $memberTag
-            }
-            incr i
-        }
-
-        set parsedFieldType [dict get $fieldInfo type]
-        if {$i < $len && [lindex $tokens $i] eq "\{" && ($parsedFieldType eq "INTEGER" || $parsedFieldType eq "BIT STRING")} {
-            set namedValues [asn1::parse_named_number_list tokens i errors]
-            if {$parsedFieldType eq "BIT STRING"} {
-                dict set fieldInfo namedBits $namedValues
-            } else {
-                dict set fieldInfo namedNumbers $namedValues
-            }
-        }
-
-        # Handle OPTIONAL keyword
-        if {$i < $len && [lindex $tokens $i] eq "OPTIONAL"} {
-            dict set fieldInfo optional true
-            incr i
-        }
-
-        # Handle DEFAULT keyword and its value
-        if {$i < $len && [lindex $tokens $i] eq "DEFAULT"} {
-            incr i
-            if {$i < $len && [lindex $tokens $i] ni {"," "\}" "..."}} {
-                dict set fieldInfo default [asn1::strip_string_literal [lindex $tokens $i]]
-                incr i
-            }
-        }
-
-        if {$inExtensions} {
-            dict set extensions $fieldName $fieldInfo
-        } else {
-            dict set fields $fieldName $fieldInfo
-        }
-        if {$i < $len && [lindex $tokens $i] eq ","} {
-            incr i
-        }
-    }
-
-    return [list $fields $extensible $extensions]
-}
-
-# Refactored component parser. This later definition replaces the original
-# implementation above and routes all component type parsing through parse_type.
+# Parse the components (fields) inside a SEQUENCE, SET, or CHOICE block.
+# Reads tokens from the current index until the closing brace.
 proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {parentName ""}} {
     upvar 1 $tokensVar tokens
     upvar 1 $indexVar i
@@ -576,11 +877,15 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
     set len [llength $tokens]
     set fields [dict create]
     set extensions [dict create]
+    set order {}
+    set extensionOrder {}
     set extensible 0
     set inExtensions 0
 
     while {$i < $len && [lindex $tokens $i] ne "\}"} {
-        if {[lindex $tokens $i] eq "..."} {
+        set current [lindex $tokens $i]
+
+        if {$current eq "..."} {
             set extensible 1
             set inExtensions 1
             incr i
@@ -590,7 +895,43 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
             continue
         }
 
-        set fieldName [lindex $tokens $i]
+        if {$current eq "\[" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "\["} {
+            set extensible 1
+            set inExtensions 1
+            incr i 2
+            if {$i + 1 < $len && [string is integer -strict [lindex $tokens $i]] && [lindex $tokens [expr {$i+1}]] eq ":"} {
+                incr i 2
+            }
+            continue
+        }
+
+        if {$current eq "\]" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "\]"} {
+            incr i 2
+            if {$i < $len && [lindex $tokens $i] eq ","} {
+                incr i
+            }
+            continue
+        }
+
+        if {$current eq "COMPONENTS" && $i + 1 < $len && [lindex $tokens [expr {$i+1}]] eq "OF"} {
+            incr i 2
+            if {$i >= $len} {
+                lappend errors "Missing type reference after COMPONENTS OF"
+                break
+            }
+            set componentType [asn1::parse_type_name tokens i]
+            if {$inExtensions} {
+                lappend extensionOrder [list componentsOf $componentType]
+            } else {
+                lappend order [list componentsOf $componentType]
+            }
+            if {$i < $len && [lindex $tokens $i] eq ","} {
+                incr i
+            }
+            continue
+        }
+
+        set fieldName $current
         incr i
 
         if {$i >= $len || [lindex $tokens $i] eq "\}"} {
@@ -629,21 +970,28 @@ proc asn1::parse_components {tokensVar indexVar errorsVar {moduleAstVar ""} {par
 
         if {$inExtensions} {
             dict set extensions $fieldName $fieldInfo
+            lappend extensionOrder [list field $fieldName]
         } else {
             dict set fields $fieldName $fieldInfo
+            lappend order [list field $fieldName]
         }
         if {$i < $len && [lindex $tokens $i] eq ","} {
             incr i
         }
     }
 
-    return [list $fields $extensible $extensions]
+    return [list $fields $extensible $extensions $order $extensionOrder]
 }
 
-proc asn1::apply_automatic_tags {moduleAstVar} {
+proc asn1::apply_automatic_tags {moduleAstVar {moduleName ""}} {
     upvar 1 $moduleAstVar moduleAst
     if {![dict exists $moduleAst tagging] || [dict get $moduleAst tagging] ne "AUTOMATIC"} {
         return
+    }
+    if {$moduleName ne ""} {
+        set localAst [dict create $moduleName $moduleAst]
+    } else {
+        set localAst ""
     }
 
     foreach typeName [dict keys [dict get $moduleAst types]] {
@@ -653,10 +1001,39 @@ proc asn1::apply_automatic_tags {moduleAstVar} {
         }
 
         set nextTag 0
-        foreach componentKey {components extensionAdditions} {
+        foreach componentPair {{components componentOrder} {extensionAdditions extensionAdditionOrder}} {
+            lassign $componentPair componentKey orderKey
             if {![dict exists $moduleAst types $typeName $componentKey]} {
                 continue
             }
+            if {[dict exists $moduleAst types $typeName $orderKey]} {
+                foreach entry [dict get $moduleAst types $typeName $orderKey] {
+                    if {[lindex $entry 0] eq "componentsOf"} {
+                        if {$localAst ne ""} {
+                            set refType [lindex $entry 1]
+                            if {[catch {set refComps [asn1::ber_resolve_components_of $localAst $moduleName $refType [dict create]]}]} {
+                                incr nextTag
+                            } else {
+                                incr nextTag [dict size $refComps]
+                            }
+                        } else {
+                            incr nextTag
+                        }
+                        continue
+                    }
+                    set fieldName [lindex $entry 1]
+                    if {![dict exists $moduleAst types $typeName $componentKey $fieldName]} {
+                        continue
+                    }
+                    set fieldDef [dict get $moduleAst types $typeName $componentKey $fieldName]
+                    if {![dict exists $fieldDef tag]} {
+                        dict set moduleAst types $typeName $componentKey $fieldName tag [dict create class CONTEXT-SPECIFIC number $nextTag]
+                    }
+                    incr nextTag
+                }
+                continue
+            }
+
             dict for {fieldName fieldDef} [dict get $moduleAst types $typeName $componentKey] {
                 if {![dict exists $fieldDef tag]} {
                     dict set moduleAst types $typeName $componentKey $fieldName tag [dict create class CONTEXT-SPECIFIC number $nextTag]
@@ -765,190 +1142,29 @@ proc asn1::parse {tokens} {
                             continue
                         }
                         set tagDict [asn1::parse_tag_optional tokens tempIdx]
-                        set rhsToken [lindex $tokens $tempIdx]
-
-                        if {$rhsToken eq "SEQUENCE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "OF"} {
-                            # Parse SEQUENCE OF
-                            set i $tempIdx
-                            set typeInfo [asn1::parse_type tokens i errors moduleAst $ident "item"]
-                            dict set moduleAst types $ident $typeInfo
-                            if {$tagDict ne {}} {
-                                dict set moduleAst types $ident tag $tagDict
-                            }
-                        } elseif {$rhsToken eq "SET" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "OF"} {
-                            # Parse SET OF
-                            set i $tempIdx
-                            set typeInfo [asn1::parse_type tokens i errors moduleAst $ident "item"]
-                            dict set moduleAst types $ident $typeInfo
-                            if {$tagDict ne {}} {
-                                dict set moduleAst types $ident tag $tagDict
-                            }
-                        } elseif {$rhsToken eq "SEQUENCE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
-                            # Parse SEQUENCE
-                            set i [expr {$tempIdx + 2}]
-                            lassign [asn1::parse_components tokens i errors moduleAst $ident] fields extensible extensions
-                            dict set moduleAst types $ident type "SEQUENCE"
-                            if {$tagDict ne {}} {
-                                dict set moduleAst types $ident tag $tagDict
-                            }
-                            dict set moduleAst types $ident components $fields
-                            if {$extensible} {
-                                dict set moduleAst types $ident extensible 1
-                                dict set moduleAst types $ident extensionAdditions $extensions
-                            } elseif {$extensibilityImplied} {
-                                dict set moduleAst types $ident extensible 1
-                            }
-                            if {$i < $len && [lindex $tokens $i] eq "\}"} {
-                                incr i ;# skip closing brace
-                            } else {
-                                lappend errors "Missing closing brace for SEQUENCE '$ident'"
-                            }
-                        } elseif {$rhsToken eq "CHOICE" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
-                            # Parse CHOICE
-                            set i [expr {$tempIdx + 2}]
-                            lassign [asn1::parse_components tokens i errors moduleAst $ident] fields extensible extensions
-                            dict set moduleAst types $ident type "CHOICE"
-                            if {$tagDict ne {}} {
-                                dict set moduleAst types $ident tag $tagDict
-                            }
-                            dict set moduleAst types $ident components $fields
-                            if {$extensible} {
-                                dict set moduleAst types $ident extensible 1
-                                dict set moduleAst types $ident extensionAdditions $extensions
-                            } elseif {$extensibilityImplied} {
-                                dict set moduleAst types $ident extensible 1
-                            }
-                            if {$i < $len && [lindex $tokens $i] eq "\}"} {
-                                incr i ;# skip closing brace
-                            } else {
-                                lappend errors "Missing closing brace for CHOICE '$ident'"
-                            }
-                        } elseif {$rhsToken eq "SET" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
-                            # Parse SET
-                            set i [expr {$tempIdx + 2}]
-                            lassign [asn1::parse_components tokens i errors moduleAst $ident] fields extensible extensions
-                            dict set moduleAst types $ident type "SET"
-                            if {$tagDict ne {}} {
-                                dict set moduleAst types $ident tag $tagDict
-                            }
-                            dict set moduleAst types $ident components $fields
-                            if {$extensible} {
-                                dict set moduleAst types $ident extensible 1
-                                dict set moduleAst types $ident extensionAdditions $extensions
-                            } elseif {$extensibilityImplied} {
-                                dict set moduleAst types $ident extensible 1
-                            }
-                            if {$i < $len && [lindex $tokens $i] eq "\}"} {
-                                incr i ;# skip closing brace
-                            } else {
-                                lappend errors "Missing closing brace for SET '$ident'"
-                            }
-                        } elseif {$rhsToken eq "ENUMERATED" && $tempIdx + 1 < $len && [lindex $tokens [expr {$tempIdx+1}]] eq "\{"} {
-                            # Parse ENUMERATED
-                            set i [expr {$tempIdx + 2}]
-                            set vals [dict create]
-                            set extVals [dict create]
-                            set extensible 0
-                            set inExtensions 0
-                            
-                            while {$i < $len && [lindex $tokens $i] ne "\}"} {
-                                if {[lindex $tokens $i] eq "..."} {
-                                    set extensible 1
-                                    set inExtensions 1
-                                    incr i
-                                    if {$i < $len && [lindex $tokens $i] eq ","} { incr i }
-                                    continue
-                                }
-                                set enumName [lindex $tokens $i]
-                                incr i
-                                set enumVal ""
-                                if {$i < $len && [lindex $tokens $i] eq "("} {
-                                    incr i
-                                    set enumVal [lindex $tokens $i]
-                                    incr i ;# closing )
-                                    if {$i < $len && [lindex $tokens $i] eq ")"} { incr i }
-                                }
-                                if {$inExtensions} {
-                                    dict set extVals $enumName $enumVal
-                                } else {
-                                    dict set vals $enumName $enumVal
-                                }
-                                if {$i < $len && [lindex $tokens $i] eq ","} { incr i }
-                            }
-                            dict set moduleAst types $ident type "ENUMERATED"
-                            if {$tagDict ne {}} { dict set moduleAst types $ident tag $tagDict }
-                            dict set moduleAst types $ident values $vals
-                            if {$extensible} {
-                                dict set moduleAst types $ident extensible 1
-                                dict set moduleAst types $ident extensionAdditions $extVals
-                            } elseif {$extensibilityImplied} {
-                                dict set moduleAst types $ident extensible 1
-                            }
-                            if {$i < $len && [lindex $tokens $i] eq "\}"} {
-                                incr i
-                            } else {
-                                lappend errors "Missing closing brace for ENUMERATED '$ident'"
-                            }
-                        } else {
-                            # Simple type assignment
-                            set i $tempIdx
-                            set typeInfo [asn1::parse_type tokens i errors]
-                            dict set moduleAst types $ident $typeInfo
-                            if {$tagDict ne {}} {
-                                dict set moduleAst types $ident tag $tagDict
-                            }
+                        set i $tempIdx
+                        set typeInfo [asn1::parse_type tokens i errors moduleAst $ident ""]
+                        if {$tagDict ne {}} {
+                            dict set typeInfo tag $tagDict
                         }
+                        if {$extensibilityImplied && [dict exists $typeInfo type] && [dict get $typeInfo type] in {"SEQUENCE" "SET" "CHOICE" "ENUMERATED"} && ![dict exists $typeInfo extensible]} {
+                            dict set typeInfo extensible 1
+                        }
+                        dict set moduleAst types $ident $typeInfo
                     } else {
-                        # Check for value assignment: valueName TYPE ::= value
-                        # or: valueName OCTET STRING ::= value
-                        set isValueAssign 0
-                        set valTypeRef ""
-                        set valAssignIdx 0
-
-                        if {$i + 2 < $len && [lindex $tokens [expr {$i+2}]] eq "::="} {
-                            # Pattern: valueName TYPE ::= value
-                            set valTypeRef [lindex $tokens [expr {$i+1}]]
-                            set valAssignIdx [expr {$i + 3}]
-                            set isValueAssign 1
-                        } elseif {$i + 3 < $len && [lindex $tokens [expr {$i+1}]] in {"OCTET" "BIT"} && [lindex $tokens [expr {$i+2}]] eq "STRING" && [lindex $tokens [expr {$i+3}]] eq "::="} {
-                            # Pattern: valueName OCTET STRING ::= value
-                            set valTypeRef "[lindex $tokens [expr {$i+1}]] STRING"
-                            set valAssignIdx [expr {$i + 4}]
-                            set isValueAssign 1
+                        set typeIdx [expr {$i + 1}]
+                        if {$typeIdx < $len} {
+                            set valTypeRef [asn1::parse_type_name tokens typeIdx]
+                        } else {
+                            set valTypeRef ""
                         }
 
-                        if {$isValueAssign && $valAssignIdx < $len} {
+                        if {$valTypeRef ne "" && $typeIdx < $len && [lindex $tokens $typeIdx] eq "::="} {
                             set valName $ident
-                            # Parse the value literal
-                            set valTok [lindex $tokens $valAssignIdx]
-                            if {$valTok eq "\{"} {
-                                # Sequence/Set value parsing
-                                incr valAssignIdx
-                                set seqVal [dict create]
-                                while {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] ne "\}"} {
-                                    set fName [lindex $tokens $valAssignIdx]
-                                    incr valAssignIdx
-                                    if {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] ni {"," "\}"}} {
-                                        set fVal [lindex $tokens $valAssignIdx]
-                                        dict set seqVal $fName $fVal
-                                        incr valAssignIdx
-                                    }
-                                    if {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] eq ","} {
-                                        incr valAssignIdx
-                                    }
-                                }
-                                if {$valAssignIdx < $len && [lindex $tokens $valAssignIdx] eq "\}"} {
-                                    incr valAssignIdx
-                                }
-                                dict set moduleAst values $valName [dict create type $valTypeRef value $seqVal]
-                                set i $valAssignIdx
-                            } else {
-                                # Simple literal value (integer, boolean, string, reference)
-                                set litVal $valTok
-                                set litVal [asn1::strip_string_literal $litVal]
-                                dict set moduleAst values $valName [dict create type $valTypeRef value $litVal]
-                                set i [expr {$valAssignIdx + 1}]
-                            }
+                            set valAssignIdx [expr {$typeIdx + 1}]
+                            set value [asn1::parse_value_literal tokens valAssignIdx errors moduleAst $valTypeRef]
+                            dict set moduleAst values $valName [dict create type $valTypeRef value $value]
+                            set i $valAssignIdx
                         } else {
                             incr i
                         }
@@ -963,7 +1179,7 @@ proc asn1::parse {tokens} {
                 if {[llength $errors] > 0} {
                     dict set moduleAst errors_ $errors
                 }
-                asn1::apply_automatic_tags moduleAst
+                asn1::apply_automatic_tags moduleAst $moduleName
                 dict set ast $moduleName $moduleAst
             } else {
                 incr i
@@ -993,6 +1209,30 @@ proc asn1::validate_tag_ast {tag path} {
     }
 }
 
+proc asn1::validate_component_order {typeDef componentKey orderKey path} {
+    if {![dict exists $typeDef $orderKey]} {
+        return
+    }
+    set order [dict get $typeDef $orderKey]
+    foreach entry $order {
+        set kind [lindex $entry 0]
+        switch $kind {
+            "field" {
+                set fieldName [lindex $entry 1]
+                asn1::assert_parse_invariant [expr {$fieldName ne ""}] "$path $orderKey has empty field entry"
+                asn1::assert_parse_invariant [dict exists $typeDef $componentKey $fieldName] "$path $orderKey references unknown field '$fieldName'"
+            }
+            "componentsOf" {
+                set refName [lindex $entry 1]
+                asn1::assert_parse_invariant [expr {$refName ne ""}] "$path $orderKey has empty COMPONENTS OF reference"
+            }
+            default {
+                asn1::assert_parse_invariant 0 "$path $orderKey has invalid entry kind '$kind'"
+            }
+        }
+    }
+}
+
 proc asn1::validate_type_ast {typeDef path} {
     asn1::assert_parse_invariant [dict exists $typeDef type] "$path missing type"
     set typeName [dict get $typeDef type]
@@ -1006,6 +1246,13 @@ proc asn1::validate_type_ast {typeDef path} {
         asn1::assert_parse_invariant [dict exists $typeDef components] "$path $typeName missing components"
         dict for {fieldName fieldDef} [dict get $typeDef components] {
             asn1::validate_type_ast $fieldDef "$path.$fieldName"
+        }
+        asn1::validate_component_order $typeDef components componentOrder $path
+        if {[dict exists $typeDef extensionAdditions]} {
+            dict for {fieldName fieldDef} [dict get $typeDef extensionAdditions] {
+                asn1::validate_type_ast $fieldDef "$path.$fieldName"
+            }
+            asn1::validate_component_order $typeDef extensionAdditions extensionAdditionOrder $path
         }
     }
 
@@ -1084,6 +1331,19 @@ proc asn1::type_reference_names {typeDef} {
             dict for {_ componentDef} [dict get $typeDef $componentKey] {
                 foreach ref [asn1::type_reference_names $componentDef] {
                     lappend refs $ref
+                }
+            }
+        }
+        foreach orderKey {componentOrder extensionAdditionOrder} {
+            if {![dict exists $typeDef $orderKey]} {
+                continue
+            }
+            foreach entry [dict get $typeDef $orderKey] {
+                if {[lindex $entry 0] eq "componentsOf"} {
+                    set refName [lindex $entry 1]
+                    if {$refName ni [asn1::ber_builtin_types]} {
+                        lappend refs $refName
+                    }
                 }
             }
         }
@@ -1496,7 +1756,7 @@ proc asn1::ber_encode_integer {val} {
 }
 
 proc asn1::ber_builtin_types {} {
-    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "BIT STRING" "NULL" "OBJECT IDENTIFIER" "UTF8String" "NumericString" "PrintableString" "IA5String" "VisibleString" "ANY" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
+    return {"INTEGER" "BOOLEAN" "ENUMERATED" "OCTET STRING" "BIT STRING" "NULL" "OBJECT IDENTIFIER" "UTF8String" "NumericString" "PrintableString" "IA5String" "VisibleString" "ANY" "REAL" "RELATIVE-OID" "EXTERNAL" "EMBEDDED PDV" "UTCTime" "GeneralizedTime" "SEQUENCE" "SET" "SEQUENCE OF" "SET OF" "CHOICE"}
 }
 
 proc asn1::ber_encode_oid_subidentifier {val} {
@@ -1759,15 +2019,17 @@ proc asn1::ber_decode_string_value {valBytes tagCons} {
 
 proc asn1::resolve_seq_value {ast moduleName seqDef val} {
     # Resolve the actual SEQUENCE/SET type definition
+    set moduleName [asn1::ber_effective_module $moduleName $seqDef]
     set baseType [dict get $seqDef type]
     while {$baseType ni {"SEQUENCE" "SET"} && [dict exists $ast $moduleName types $baseType]} {
         set seqDef [dict get $ast $moduleName types $baseType]
+        set moduleName [asn1::ber_effective_module $moduleName $seqDef]
         set baseType [dict get $seqDef type]
     }
     if {![dict exists $seqDef components]} {
         return $val
     }
-    set comps [dict get $seqDef components]
+    set comps [asn1::ber_all_components $seqDef $ast $moduleName]
     set result [dict create]
     dict for {fName fVal} $val {
         if {[dict exists $comps $fName]} {
@@ -1972,7 +2234,7 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
         "SEQUENCE" - "SET" {
             set tagNum [expr {$baseType eq "SEQUENCE" ? 16 : 17}]
             set valBytes ""
-            set comps [asn1::ber_all_components $typeDef]
+            set comps [asn1::ber_all_components $typeDef $ast $moduleName]
             dict for {fieldName fieldDef} $comps {
                 if {[dict exists $value $fieldName]} {
                     set fieldValue [dict get $value $fieldName]
@@ -2002,8 +2264,11 @@ proc asn1::ber_encode_type {ast moduleName typeDef value} {
             if {$chosenField eq "_extension" && [asn1::ber_type_is_extensible $typeDef]} {
                 return [dict get $value $chosenField]
             }
-            set fieldDef [dict get [asn1::ber_all_components $typeDef] $chosenField]
+            set fieldDef [dict get [asn1::ber_all_components $typeDef $ast $moduleName] $chosenField]
             return [asn1::ber_encode_type $ast $moduleName $fieldDef [dict get $value $chosenField]]
+        }
+        default {
+            error "BER encode not implemented for $baseType"
         }
     }
 
@@ -2174,10 +2439,16 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         "BIT STRING" { return [list [list 0 0 3] [list 0 32 3]] }
         "NULL" { return [list [list 0 0 5]] }
         "OBJECT IDENTIFIER" { return [list [list 0 0 6]] }
+        "EXTERNAL" { return [list [list 0 32 8]] }
+        "REAL" { return [list [list 0 0 9]] }
+        "EMBEDDED PDV" { return [list [list 0 32 11]] }
+        "RELATIVE-OID" { return [list [list 0 0 13]] }
         "UTF8String" { return [list [list 0 0 12] [list 0 32 12]] }
         "NumericString" { return [list [list 0 0 18] [list 0 32 18]] }
         "PrintableString" { return [list [list 0 0 19] [list 0 32 19]] }
         "IA5String" { return [list [list 0 0 22] [list 0 32 22]] }
+        "UTCTime" { return [list [list 0 0 23] [list 0 32 23]] }
+        "GeneralizedTime" { return [list [list 0 0 24] [list 0 32 24]] }
         "VisibleString" { return [list [list 0 0 26] [list 0 32 26]] }
         "ANY" { return {} }
         "SEQUENCE" { return [list [list 0 32 16]] }
@@ -2186,11 +2457,14 @@ proc asn1::get_expected_tag {ast moduleName typeDef} {
         "SET OF" { return [list [list 0 32 17]] }
         "CHOICE" {
             set tags {}
-            set comps [asn1::ber_all_components $typeDef]
+            set comps [asn1::ber_all_components $typeDef $ast $moduleName]
             dict for {fieldName fieldDef} $comps {
                 foreach t [asn1::get_expected_tag $ast $moduleName $fieldDef] { lappend tags $t }
             }
             return $tags
+        }
+        default {
+            error "BER tag lookup not implemented for $baseType"
         }
     }
 }
@@ -2230,16 +2504,58 @@ proc asn1::ber_type_is_extensible {typeDef} {
     return [expr {[dict exists $typeDef extensible] && [dict get $typeDef extensible]}]
 }
 
-proc asn1::ber_all_components {typeDef} {
-    set comps [dict create]
-    if {[dict exists $typeDef components]} {
-        set comps [dict get $typeDef components]
+proc asn1::ber_resolve_components_of {ast moduleName refType seen} {
+    set key "$moduleName\x1f$refType"
+    if {[dict exists $seen $key]} {
+        error "Circular COMPONENTS OF reference involving '$refType'"
     }
-    if {[dict exists $typeDef extensionAdditions]} {
-        dict for {fieldName fieldDef} [dict get $typeDef extensionAdditions] {
-            dict set comps $fieldName $fieldDef
+    dict set seen $key true
+
+    set refDef [asn1::ber_lookup_type_def $ast $moduleName $refType]
+    set refModule [asn1::ber_effective_module $moduleName $refDef]
+    set baseType [dict get $refDef type]
+    while {$baseType ni {"SEQUENCE" "SET"} && $baseType ni [asn1::ber_builtin_types] && [asn1::ber_type_exists $ast $refModule $baseType]} {
+        set refDef [asn1::ber_lookup_type_def $ast $refModule $baseType]
+        set refModule [asn1::ber_effective_module $refModule $refDef]
+        set baseType [dict get $refDef type]
+    }
+    if {$baseType ni {"SEQUENCE" "SET"}} {
+        error "COMPONENTS OF '$refType' must reference a SEQUENCE or SET type"
+    }
+
+    return [asn1::ber_all_components $refDef $ast $refModule $seen]
+}
+
+proc asn1::ber_add_ordered_components {resultVar typeDef componentKey orderKey ast moduleName seen} {
+    upvar 1 $resultVar result
+
+    if {[dict exists $typeDef $orderKey] && $ast ne "" && $moduleName ne ""} {
+        foreach entry [dict get $typeDef $orderKey] {
+            set kind [lindex $entry 0]
+            if {$kind eq "field"} {
+                set fieldName [lindex $entry 1]
+                if {[dict exists $typeDef $componentKey $fieldName]} {
+                    dict set result $fieldName [dict get $typeDef $componentKey $fieldName]
+                }
+            } elseif {$kind eq "componentsOf"} {
+                set refType [lindex $entry 1]
+                set refComps [asn1::ber_resolve_components_of $ast $moduleName $refType $seen]
+                dict for {fieldName fieldDef} $refComps {
+                    dict set result $fieldName $fieldDef
+                }
+            }
+        }
+    } elseif {[dict exists $typeDef $componentKey]} {
+        dict for {fieldName fieldDef} [dict get $typeDef $componentKey] {
+            dict set result $fieldName $fieldDef
         }
     }
+}
+
+proc asn1::ber_all_components {typeDef {ast ""} {moduleName ""} {seen {}}} {
+    set comps [dict create]
+    asn1::ber_add_ordered_components comps $typeDef components componentOrder $ast $moduleName $seen
+    asn1::ber_add_ordered_components comps $typeDef extensionAdditions extensionAdditionOrder $ast $moduleName $seen
     return $comps
 }
 
@@ -2407,7 +2723,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
     set parsedTag [list $tagClass $tagCons $tagNum]
     
     if {$baseType eq "CHOICE"} {
-        set comps [asn1::ber_all_components $typeDef]
+        set comps [asn1::ber_all_components $typeDef $ast $moduleName]
         dict for {fieldName fieldDef} $comps {
             set expectedTags [asn1::get_expected_tag $ast $moduleName $fieldDef]
             if {[lsearch -exact $expectedTags $parsedTag] != -1} {
@@ -2474,7 +2790,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
         "SEQUENCE" {
             set result [dict create]
             set subIdx 0
-            set comps [asn1::ber_all_components $typeDef]
+            set comps [asn1::ber_all_components $typeDef $ast $moduleName]
             set valLen [string length $valBytes]
             dict for {fieldName fieldDef} $comps {
                 if {$subIdx >= $valLen} {
@@ -2512,7 +2828,7 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
             set decodedFields [dict create]
             set seenFields [dict create]
             set subIdx 0
-            set comps [asn1::ber_all_components $typeDef]
+            set comps [asn1::ber_all_components $typeDef $ast $moduleName]
             set valLen [string length $valBytes]
 
             while {$subIdx < $valLen} {
@@ -2558,6 +2874,9 @@ proc asn1::ber_decode_type {ast moduleName typeDef bytes idxVar} {
                 lappend result [asn1::ber_decode_type $ast $moduleName $elemDef $valBytes subIdx]
             }
             set decodedValue $result
+        }
+        default {
+            error "BER decode not implemented for $baseType"
         }
     }
 

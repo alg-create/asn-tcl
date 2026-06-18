@@ -11,6 +11,8 @@ set schema {
         MyInt ::= INTEGER
         MyBool ::= BOOLEAN
         MyStr ::= OCTET STRING
+        MyOid ::= OBJECT IDENTIFIER
+        MyBits ::= BIT STRING
 
         MySeq ::= SEQUENCE {
             id INTEGER,
@@ -26,6 +28,12 @@ set schema {
         greeting OCTET STRING ::= "hello"
         aliasedVal MyInt ::= 42
         myRecord MySeq ::= { id 10, active TRUE }
+        oidVal OBJECT IDENTIFIER ::= { iso member-body us rsadsi(113549) }
+        oidAliasVal MyOid ::= { 1 member-body(2) 840 113549 }
+        bitLiteral BIT STRING ::= '1010'B
+        hexLiteral OCTET STRING ::= '0A3F'H
+        doubledQuote UTF8String ::= "he said ""hi"""
+        escapedQuote UTF8String ::= "he said \"hi\""
     END
 }
 
@@ -73,6 +81,31 @@ tcltest::test val-parse-6.1 {Types still parsed correctly alongside values} -bod
     dict get $ast ValModule types MyInt type
 } -result {INTEGER}
 
+tcltest::test val-parse-7.1 {Parse OBJECT IDENTIFIER named arcs} -body {
+    dict get $ast ValModule values oidVal
+} -result {type {OBJECT IDENTIFIER} value {1 2 840 113549}}
+
+tcltest::test val-parse-7.2 {Parse OBJECT IDENTIFIER mixed arcs through alias} -body {
+    dict get $ast ValModule values oidAliasVal
+} -result {type MyOid value {1 2 840 113549}}
+
+tcltest::test val-parse-8.1 {Parse binary BIT STRING literal} -body {
+    set value [dict get $ast ValModule values bitLiteral value]
+    list [binary encode hex [lindex $value 0]] [lindex $value 1]
+} -result {a0 4}
+
+tcltest::test val-parse-8.2 {Parse hex OCTET STRING literal} -body {
+    binary encode hex [dict get $ast ValModule values hexLiteral value]
+} -result {0a3f}
+
+tcltest::test val-parse-8.3 {Parse doubled quotes in character strings} -body {
+    dict get $ast ValModule values doubledQuote value
+} -result {he said "hi"}
+
+tcltest::test val-parse-8.4 {Parse escaped quotes in character strings} -body {
+    dict get $ast ValModule values escapedQuote value
+} -result {he said "hi"}
+
 # --- BER Encoding Tests ---
 
 tcltest::test val-ber-1.1 {BER encode INTEGER value} -body {
@@ -110,6 +143,18 @@ tcltest::test val-ber-4.1 {BER encode aliased type value} -body {
 tcltest::test val-ber-5.1 {BER encode SEQUENCE value} -body {
     binary encode hex [asn1::ber_encode_value $ast ValModule myRecord]
 } -result "300602010a0101ff"
+
+tcltest::test val-ber-6.1 {BER encode OBJECT IDENTIFIER value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule oidVal]
+} -result "06062a864886f70d"
+
+tcltest::test val-ber-6.2 {BER encode BIT STRING literal value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule bitLiteral]
+} -result "030204a0"
+
+tcltest::test val-ber-6.3 {BER encode hex OCTET STRING literal value} -body {
+    binary encode hex [asn1::ber_encode_value $ast ValModule hexLiteral]
+} -result "04020a3f"
 
 # --- Round-trip Tests ---
 

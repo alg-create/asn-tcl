@@ -16,11 +16,14 @@ Supported parser features include:
 - `SEQUENCE`, `SET`, `CHOICE`
 - `SEQUENCE OF` and `SET OF`
 - Inline nested `SEQUENCE`, `SET`, and `CHOICE`, including inline element types for `SEQUENCE OF` / `SET OF`
+- `COMPONENTS OF` inside `SEQUENCE` and `SET`
 - Named numbers for `INTEGER`
 - Named bits for `BIT STRING`
 - Tags at type and component level
-- `OPTIONAL`, `DEFAULT`, extension markers, and extension additions storage
+- `OPTIONAL`, `DEFAULT`, extension markers, extension addition groups, and extension additions storage
 - Simple `RANGE` and `SIZE` constraints at type and component level
+- Value assignments for simple literals, nested record-like values, binary and hex string literals, and `OBJECT IDENTIFIER` arcs with common names
+- Parser-only recognition for `REAL`, `RELATIVE-OID`, `EXTERNAL`, `EMBEDDED PDV`, `UTCTime`, and `GeneralizedTime`
 - AST invariant validation after parsing
 
 Supported BER features include:
@@ -42,7 +45,8 @@ Notable limitations:
 
 - DER canonical encoding is not implemented.
 - Full X.682/X.683 constraint syntax is not implemented.
-- `REAL`, many string-family BER tags beyond the currently listed string types, object classes, parameterization, and information object sets are not implemented.
+- BER for parser-only types such as `REAL`, `RELATIVE-OID`, `EXTERNAL`, `EMBEDDED PDV`, `UTCTime`, and `GeneralizedTime` is not implemented.
+- Many string-family BER tags beyond the currently listed string types, object classes, parameterization, and information object sets are not implemented.
 - Import merging only uses modules already parsed by `parse_str`, `parse_file`, or `parse_files`; it does not auto-discover files.
 
 ## Project Layout
